@@ -153,6 +153,8 @@ def create_gateway_transaction(
     terminal_id=None,
     pos_station=None,
     computer_name=None,
+    pos_payment_session=None,
+    pos_payment_allocation=None,
 ):
     normalized = normalized or {}
 
@@ -172,6 +174,8 @@ def create_gateway_transaction(
     doc.terminal_id = terminal_id
     doc.pos_station = pos_station
     doc.computer_name = computer_name
+    doc.pos_payment_session = pos_payment_session
+    doc.pos_payment_allocation = pos_payment_allocation
 
     doc.provider_transaction_id = normalized.get("provider_transaction_id")
     doc.provider_order_id = normalized.get("provider_order_id")
@@ -209,6 +213,16 @@ def update_transaction_from_status(doc, normalized):
     doc.status = normalize_status(doc.provider, normalized.get("status"))
     save_raw(doc, normalized.get("raw"))
     doc.save(ignore_permissions=True)
+
+    if getattr(doc, "pos_payment_allocation", None):
+        try:
+            from erpnext_payment_hub.pos.service import sync_allocation_from_gateway
+            sync_allocation_from_gateway(doc)
+        except Exception:
+            frappe.log_error(
+                title=f"Payment Hub POS sync failed: {doc.name}",
+                message=frappe.get_traceback(),
+            )
     return doc
 
 

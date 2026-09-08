@@ -10,7 +10,17 @@
     "force_original_payment_method_refund",
     "allow_partial_refund",
     "verify_by_status_api",
-    "auto_reconcile"
+    "auto_reconcile",
+    "pos_section",
+    "online_provider",
+    "physical_terminal_provider",
+    "cash_mode_of_payment",
+    "physical_mode_of_payment",
+    "electronic_mode_of_payment",
+    "whatsapp_integration",
+    "async_electronic_payment",
+    "after_electronic_capture",
+    "payment_link_expiry_minutes"
   ],
   "fields": [
     {
@@ -42,6 +52,67 @@
       "label": "Auto Reconcile",
       "fieldtype": "Check",
       "default": "1"
+    },
+    {
+      "fieldname": "pos_section",
+      "label": "POS Integration",
+      "fieldtype": "Section Break"
+    },
+    {
+      "fieldname": "online_provider",
+      "label": "Online / WhatsApp Payment Provider",
+      "fieldtype": "Link",
+      "options": "Payment Provider Account"
+    },
+    {
+      "fieldname": "physical_terminal_provider",
+      "label": "Physical Terminal Provider",
+      "fieldtype": "Link",
+      "options": "Payment Provider Account"
+    },
+    {
+      "fieldname": "cash_mode_of_payment",
+      "label": "Cash Mode of Payment",
+      "fieldtype": "Data",
+      "default": "Cash"
+    },
+    {
+      "fieldname": "physical_mode_of_payment",
+      "label": "Physical Terminal Mode of Payment",
+      "fieldtype": "Data",
+      "default": "Physical Payment Terminal"
+    },
+    {
+      "fieldname": "electronic_mode_of_payment",
+      "label": "Electronic Payment Mode of Payment",
+      "fieldtype": "Data",
+      "default": "Electronic Payment"
+    },
+    {
+      "fieldname": "whatsapp_integration",
+      "label": "WhatsApp Integration",
+      "fieldtype": "Select",
+      "options": "Frappe WhatsApp\nMeta WhatsApp Cloud API",
+      "default": "Frappe WhatsApp"
+    },
+    {
+      "fieldname": "async_electronic_payment",
+      "label": "Save Electronic Payment and Serve Next Customer",
+      "fieldtype": "Check",
+      "default": "1"
+    },
+    {
+      "fieldname": "after_electronic_capture",
+      "label": "After Electronic Payment Capture",
+      "fieldtype": "Select",
+      "options": "Mark Paid Only\nAuto Submit Invoice\nAuto Submit + Print Queue",
+      "default": "Mark Paid Only"
+    },
+    {
+      "fieldname": "payment_link_expiry_minutes",
+      "label": "Payment Link / Pending Sale Expiry (Minutes)",
+      "fieldtype": "Int",
+      "default": "30"
     }
   ],
   "permissions": [

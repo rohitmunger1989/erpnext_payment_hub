@@ -463,3 +463,39 @@ blocks the refund request.
   as `ExternalIdentifier` are also recoverable.
 - `refresh_transaction()` now supports MyFatoorah Refund transactions through
   `GetRefundStatus`.
+
+# v0.2.0 — Common POS Payment Backend
+
+This release adds a provider-agnostic POS payment session layer designed to be shared by POSNext and POS Awesome.
+
+## New DocTypes
+- POS Payment Session (`PPS-YYYY-#####`)
+- POS Payment Allocation (`PPA-YYYY-#####`)
+
+## Core flows
+- Cash allocations
+- Split payments
+- Asynchronous electronic payment links (save pending sale, serve next customer)
+- Pending-payment and paid-pending-sale queues
+- Gateway webhook/status synchronization back into POS sessions
+- Realtime session status events (`payment_hub_pos_update`)
+- Five-minute low-rate status reconciliation fallback
+- Physical terminal API contract (`start_terminal_payment`) ready for provider SmartPOS/ECR adapters
+- Final invoice linking only after confirmed payment
+
+## Shared APIs
+- `erpnext_payment_hub.pos.api.get_pos_payment_config`
+- `erpnext_payment_hub.pos.api.create_pos_session`
+- `erpnext_payment_hub.pos.api.save_pos_draft`
+- `erpnext_payment_hub.pos.api.get_pos_session`
+- `erpnext_payment_hub.pos.api.add_cash_allocation`
+- `erpnext_payment_hub.pos.api.create_payment_link`
+- `erpnext_payment_hub.pos.api.compose_payment_message`
+- `erpnext_payment_hub.pos.api.mark_payment_link_sent`
+- `erpnext_payment_hub.pos.api.check_pos_payment`
+- `erpnext_payment_hub.pos.api.start_terminal_payment`
+- `erpnext_payment_hub.pos.api.finalize_pos_session`
+- `erpnext_payment_hub.pos.api.get_pending_payments`
+- `erpnext_payment_hub.pos.api.get_paid_pending_sales`
+
+POSNext and POS Awesome frontend adapters are intentionally not patched in this release. Both will call this same backend in the next integration step.

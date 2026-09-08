@@ -189,6 +189,14 @@ def refund_transaction(transaction_name, amount, reason=None):
         amount=amount,
         currency=original.currency,
         normalized=normalized,
+        branch=original.branch,
+        pos_profile=original.pos_profile,
+        payment_terminal=original.payment_terminal,
+        terminal_id=original.terminal_id,
+        pos_station=original.pos_station,
+        computer_name=original.computer_name,
+        pos_payment_session=getattr(original, "pos_payment_session", None),
+        pos_payment_allocation=getattr(original, "pos_payment_allocation", None),
     )
 
     # Reserve the amount immediately to block duplicate over-refunds.

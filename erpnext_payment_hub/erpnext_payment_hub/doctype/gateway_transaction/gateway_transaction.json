@@ -24,6 +24,8 @@
     "pos_profile",
     "pos_station",
     "computer_name",
+    "pos_payment_session",
+    "pos_payment_allocation",
     "payment_terminal",
     "terminal_id",
     "provider_section",
@@ -224,6 +226,20 @@
       "label": "Provider Requested Order ID",
       "fieldtype": "Data",
       "read_only": 1
+    },
+    {
+      "fieldname": "pos_payment_session",
+      "label": "POS Payment Session",
+      "fieldtype": "Link",
+      "options": "POS Payment Session",
+      "search_index": 1
+    },
+    {
+      "fieldname": "pos_payment_allocation",
+      "label": "POS Payment Allocation",
+      "fieldtype": "Link",
+      "options": "POS Payment Allocation",
+      "search_index": 1
     }
   ],
   "permissions": [

@@ -1,0 +1,278 @@
+{
+  "doctype": "DocType",
+  "name": "POS Payment Session",
+  "module": "ERPNext Payment Hub",
+  "autoname": "PPS-.YYYY.-.#####",
+  "title_field": "name",
+  "track_changes": 1,
+  "field_order": [
+    "status",
+    "pos_system",
+    "identity_section",
+    "idempotency_key",
+    "cart_reference",
+    "pos_section",
+    "company",
+    "branch",
+    "pos_profile",
+    "pos_station",
+    "computer_name",
+    "warehouse",
+    "customer_section",
+    "customer",
+    "customer_name",
+    "mobile_number",
+    "email",
+    "amount_section",
+    "currency",
+    "grand_total",
+    "confirmed_paid_amount",
+    "pending_amount",
+    "remaining_amount",
+    "draft_section",
+    "draft_payload",
+    "invoice_section",
+    "invoice_doctype",
+    "invoice_name",
+    "finalized",
+    "paid_at",
+    "completed_at",
+    "last_status_check"
+  ],
+  "fields": [
+    {
+      "fieldname": "status",
+      "label": "Status",
+      "fieldtype": "Select",
+      "options": "Draft\nPayment Pending\nPartially Paid\nPaid\nReady to Complete\nCompleted\nFailed\nExpired\nCancelled",
+      "default": "Draft",
+      "reqd": 1,
+      "in_list_view": 1
+    },
+    {
+      "fieldname": "pos_system",
+      "label": "POS System",
+      "fieldtype": "Select",
+      "options": "POSNext\nPOS Awesome\nAPI",
+      "default": "API",
+      "reqd": 1,
+      "in_list_view": 1
+    },
+    {
+      "fieldname": "identity_section",
+      "label": "Session Identity",
+      "fieldtype": "Section Break"
+    },
+    {
+      "fieldname": "idempotency_key",
+      "label": "Idempotency Key",
+      "fieldtype": "Data",
+      "unique": 1,
+      "search_index": 1
+    },
+    {
+      "fieldname": "cart_reference",
+      "label": "Cart / Local Reference",
+      "fieldtype": "Data",
+      "search_index": 1
+    },
+    {
+      "fieldname": "pos_section",
+      "label": "POS Context",
+      "fieldtype": "Section Break"
+    },
+    {
+      "fieldname": "company",
+      "label": "Company",
+      "fieldtype": "Link",
+      "options": "Company",
+      "reqd": 1
+    },
+    {
+      "fieldname": "branch",
+      "label": "Branch",
+      "fieldtype": "Link",
+      "options": "Branch"
+    },
+    {
+      "fieldname": "pos_profile",
+      "label": "POS Profile",
+      "fieldtype": "Link",
+      "options": "POS Profile",
+      "in_list_view": 1
+    },
+    {
+      "fieldname": "pos_station",
+      "label": "POS Station",
+      "fieldtype": "Link",
+      "options": "POS Station",
+      "in_list_view": 1
+    },
+    {
+      "fieldname": "computer_name",
+      "label": "Computer Name",
+      "fieldtype": "Data"
+    },
+    {
+      "fieldname": "warehouse",
+      "label": "Warehouse",
+      "fieldtype": "Link",
+      "options": "Warehouse"
+    },
+    {
+      "fieldname": "customer_section",
+      "label": "Customer",
+      "fieldtype": "Section Break"
+    },
+    {
+      "fieldname": "customer",
+      "label": "Customer",
+      "fieldtype": "Link",
+      "options": "Customer",
+      "in_list_view": 1
+    },
+    {
+      "fieldname": "customer_name",
+      "label": "Customer Name",
+      "fieldtype": "Data"
+    },
+    {
+      "fieldname": "mobile_number",
+      "label": "Mobile Number",
+      "fieldtype": "Data",
+      "search_index": 1
+    },
+    {
+      "fieldname": "email",
+      "label": "Email",
+      "fieldtype": "Data",
+      "options": "Email"
+    },
+    {
+      "fieldname": "amount_section",
+      "label": "Amounts",
+      "fieldtype": "Section Break"
+    },
+    {
+      "fieldname": "currency",
+      "label": "Currency",
+      "fieldtype": "Link",
+      "options": "Currency",
+      "default": "KWD",
+      "reqd": 1
+    },
+    {
+      "fieldname": "grand_total",
+      "label": "Grand Total",
+      "fieldtype": "Currency",
+      "precision": "3",
+      "reqd": 1,
+      "in_list_view": 1
+    },
+    {
+      "fieldname": "confirmed_paid_amount",
+      "label": "Confirmed Paid",
+      "fieldtype": "Currency",
+      "precision": "3",
+      "default": "0",
+      "read_only": 1,
+      "in_list_view": 1
+    },
+    {
+      "fieldname": "pending_amount",
+      "label": "Pending Electronic",
+      "fieldtype": "Currency",
+      "precision": "3",
+      "default": "0",
+      "read_only": 1
+    },
+    {
+      "fieldname": "remaining_amount",
+      "label": "Remaining / Unallocated",
+      "fieldtype": "Currency",
+      "precision": "3",
+      "default": "0",
+      "read_only": 1,
+      "in_list_view": 1
+    },
+    {
+      "fieldname": "draft_section",
+      "label": "Saved POS Draft",
+      "fieldtype": "Section Break"
+    },
+    {
+      "fieldname": "draft_payload",
+      "label": "Draft Cart Payload",
+      "fieldtype": "Code",
+      "options": "JSON"
+    },
+    {
+      "fieldname": "invoice_section",
+      "label": "Final Invoice",
+      "fieldtype": "Section Break"
+    },
+    {
+      "fieldname": "invoice_doctype",
+      "label": "Invoice DocType",
+      "fieldtype": "Link",
+      "options": "DocType"
+    },
+    {
+      "fieldname": "invoice_name",
+      "label": "Invoice",
+      "fieldtype": "Dynamic Link",
+      "options": "invoice_doctype",
+      "search_index": 1
+    },
+    {
+      "fieldname": "finalized",
+      "label": "Finalized",
+      "fieldtype": "Check",
+      "default": "0",
+      "read_only": 1
+    },
+    {
+      "fieldname": "paid_at",
+      "label": "Paid At",
+      "fieldtype": "Datetime",
+      "read_only": 1
+    },
+    {
+      "fieldname": "completed_at",
+      "label": "Completed At",
+      "fieldtype": "Datetime",
+      "read_only": 1
+    },
+    {
+      "fieldname": "last_status_check",
+      "label": "Last Status Check",
+      "fieldtype": "Datetime",
+      "read_only": 1
+    }
+  ],
+  "permissions": [
+    {
+      "role": "System Manager",
+      "read": 1,
+      "write": 1,
+      "create": 1,
+      "delete": 1
+    },
+    {
+      "role": "Accounts Manager",
+      "read": 1,
+      "write": 1,
+      "create": 1,
+      "delete": 0
+    },
+    {
+      "role": "Sales User",
+      "read": 1,
+      "write": 1,
+      "create": 1,
+      "delete": 0
+    }
+  ],
+  "sort_field": "creation",
+  "sort_order": "DESC"
+}

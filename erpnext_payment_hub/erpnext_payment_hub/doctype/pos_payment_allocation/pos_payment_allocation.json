@@ -1,0 +1,206 @@
+{
+  "doctype": "DocType",
+  "name": "POS Payment Allocation",
+  "module": "ERPNext Payment Hub",
+  "autoname": "PPA-.YYYY.-.#####",
+  "title_field": "name",
+  "track_changes": 1,
+  "field_order": [
+    "session",
+    "sequence",
+    "channel",
+    "status",
+    "payment_section",
+    "mode_of_payment",
+    "amount",
+    "currency",
+    "gateway_transaction",
+    "provider_section",
+    "provider_account",
+    "provider",
+    "actual_payment_method",
+    "payment_terminal",
+    "terminal_id",
+    "mobile_number",
+    "payment_url",
+    "identity_section",
+    "idempotency_key",
+    "link_sent_at",
+    "link_sent_via",
+    "captured_at",
+    "failed_reason"
+  ],
+  "fields": [
+    {
+      "fieldname": "session",
+      "label": "POS Payment Session",
+      "fieldtype": "Link",
+      "options": "POS Payment Session",
+      "reqd": 1,
+      "in_list_view": 1,
+      "search_index": 1
+    },
+    {
+      "fieldname": "sequence",
+      "label": "Sequence",
+      "fieldtype": "Int",
+      "default": "1",
+      "in_list_view": 1
+    },
+    {
+      "fieldname": "channel",
+      "label": "Channel",
+      "fieldtype": "Select",
+      "options": "Cash\nPhysical Payment Terminal\nElectronic Payment",
+      "reqd": 1,
+      "in_list_view": 1
+    },
+    {
+      "fieldname": "status",
+      "label": "Status",
+      "fieldtype": "Select",
+      "options": "Draft\nWaiting\nCaptured\nFailed\nCancelled\nExpired\nRefunded",
+      "default": "Draft",
+      "reqd": 1,
+      "in_list_view": 1
+    },
+    {
+      "fieldname": "payment_section",
+      "label": "Payment",
+      "fieldtype": "Section Break"
+    },
+    {
+      "fieldname": "mode_of_payment",
+      "label": "Mode of Payment",
+      "fieldtype": "Data"
+    },
+    {
+      "fieldname": "amount",
+      "label": "Amount",
+      "fieldtype": "Currency",
+      "precision": "3",
+      "reqd": 1,
+      "in_list_view": 1
+    },
+    {
+      "fieldname": "currency",
+      "label": "Currency",
+      "fieldtype": "Link",
+      "options": "Currency",
+      "default": "KWD"
+    },
+    {
+      "fieldname": "gateway_transaction",
+      "label": "Gateway Transaction",
+      "fieldtype": "Link",
+      "options": "Gateway Transaction",
+      "search_index": 1
+    },
+    {
+      "fieldname": "provider_section",
+      "label": "Provider / Terminal",
+      "fieldtype": "Section Break"
+    },
+    {
+      "fieldname": "provider_account",
+      "label": "Provider Account",
+      "fieldtype": "Link",
+      "options": "Payment Provider Account"
+    },
+    {
+      "fieldname": "provider",
+      "label": "Provider",
+      "fieldtype": "Data",
+      "read_only": 1
+    },
+    {
+      "fieldname": "actual_payment_method",
+      "label": "Actual Payment Method",
+      "fieldtype": "Data",
+      "read_only": 1
+    },
+    {
+      "fieldname": "payment_terminal",
+      "label": "Payment Terminal",
+      "fieldtype": "Link",
+      "options": "Payment Terminal"
+    },
+    {
+      "fieldname": "terminal_id",
+      "label": "Terminal ID",
+      "fieldtype": "Data",
+      "read_only": 1
+    },
+    {
+      "fieldname": "mobile_number",
+      "label": "Mobile Number",
+      "fieldtype": "Data",
+      "search_index": 1
+    },
+    {
+      "fieldname": "payment_url",
+      "label": "Payment URL",
+      "fieldtype": "Small Text"
+    },
+    {
+      "fieldname": "identity_section",
+      "label": "Tracking",
+      "fieldtype": "Section Break"
+    },
+    {
+      "fieldname": "idempotency_key",
+      "label": "Idempotency Key",
+      "fieldtype": "Data",
+      "unique": 1,
+      "search_index": 1
+    },
+    {
+      "fieldname": "link_sent_at",
+      "label": "Payment Link Sent At",
+      "fieldtype": "Datetime",
+      "read_only": 1
+    },
+    {
+      "fieldname": "link_sent_via",
+      "label": "Payment Link Sent Via",
+      "fieldtype": "Data",
+      "read_only": 1
+    },
+    {
+      "fieldname": "captured_at",
+      "label": "Captured At",
+      "fieldtype": "Datetime",
+      "read_only": 1
+    },
+    {
+      "fieldname": "failed_reason",
+      "label": "Failure / Cancellation Reason",
+      "fieldtype": "Small Text"
+    }
+  ],
+  "permissions": [
+    {
+      "role": "System Manager",
+      "read": 1,
+      "write": 1,
+      "create": 1,
+      "delete": 1
+    },
+    {
+      "role": "Accounts Manager",
+      "read": 1,
+      "write": 1,
+      "create": 1,
+      "delete": 0
+    },
+    {
+      "role": "Sales User",
+      "read": 1,
+      "write": 1,
+      "create": 1,
+      "delete": 0
+    }
+  ],
+  "sort_field": "creation",
+  "sort_order": "DESC"
+}
