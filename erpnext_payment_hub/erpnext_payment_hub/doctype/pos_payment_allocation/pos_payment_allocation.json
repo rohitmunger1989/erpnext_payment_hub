@@ -27,7 +27,12 @@
     "idempotency_key",
     "link_sent_at",
     "link_sent_via",
+    "expires_at",
+    "link_send_count",
+    "last_whatsapp_message",
     "captured_at",
+    "cancelled_at",
+    "cancelled_reason",
     "failed_reason"
   ],
   "fields": [
@@ -176,6 +181,37 @@
       "fieldname": "failed_reason",
       "label": "Failure / Cancellation Reason",
       "fieldtype": "Small Text"
+    },
+    {
+      "fieldname": "expires_at",
+      "label": "Payment Link Expires At",
+      "fieldtype": "Datetime",
+      "read_only": 1
+    },
+    {
+      "fieldname": "link_send_count",
+      "label": "Link Send Count",
+      "fieldtype": "Int",
+      "default": "0",
+      "read_only": 1
+    },
+    {
+      "fieldname": "last_whatsapp_message",
+      "label": "Last WhatsApp Message",
+      "fieldtype": "Data",
+      "read_only": 1
+    },
+    {
+      "fieldname": "cancelled_at",
+      "label": "Cancelled At",
+      "fieldtype": "Datetime",
+      "read_only": 1
+    },
+    {
+      "fieldname": "cancelled_reason",
+      "label": "Cancelled Reason",
+      "fieldtype": "Small Text",
+      "read_only": 1
     }
   ],
   "permissions": [

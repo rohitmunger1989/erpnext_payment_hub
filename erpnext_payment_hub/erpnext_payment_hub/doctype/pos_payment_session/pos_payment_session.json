@@ -31,13 +31,16 @@
     "remaining_amount",
     "draft_section",
     "draft_payload",
+    "draft_saved_at",
     "invoice_section",
     "invoice_doctype",
     "invoice_name",
     "finalized",
     "paid_at",
     "completed_at",
-    "last_status_check"
+    "completed_by",
+    "last_status_check",
+    "last_error"
   ],
   "fields": [
     {
@@ -247,6 +250,25 @@
       "fieldname": "last_status_check",
       "label": "Last Status Check",
       "fieldtype": "Datetime",
+      "read_only": 1
+    },
+    {
+      "fieldname": "draft_saved_at",
+      "label": "Draft Saved At",
+      "fieldtype": "Datetime",
+      "read_only": 1
+    },
+    {
+      "fieldname": "last_error",
+      "label": "Last Error / Note",
+      "fieldtype": "Small Text",
+      "read_only": 1
+    },
+    {
+      "fieldname": "completed_by",
+      "label": "Completed By",
+      "fieldtype": "Link",
+      "options": "User",
       "read_only": 1
     }
   ],

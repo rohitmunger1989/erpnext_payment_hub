@@ -499,3 +499,67 @@ This release adds a provider-agnostic POS payment session layer designed to be s
 - `erpnext_payment_hub.pos.api.get_paid_pending_sales`
 
 POSNext and POS Awesome frontend adapters are intentionally not patched in this release. Both will call this same backend in the next integration step.
+
+
+# v0.2.1 — Pending Sales + Complete & Print Backend
+
+This release builds the cashier-facing backend workflow on top of the tested v0.2.0 split-payment session engine. POSNext and POS Awesome still share the same backend; their frontend adapters are the next step.
+
+## Pending Sales queues
+
+- Waiting: sessions with an electronic allocation still waiting for capture.
+- Paid / Ready to Complete: all money is captured and the sale can be finalized.
+- Failed / Expired / Cancelled: recovery queue for unsuccessful or abandoned sessions.
+- Queue counts for POS badges and search by session, customer, mobile, cart reference, or invoice.
+- Manual `check_session_payments()` plus the existing five-minute gateway reconciliation fallback.
+- Optional local expiry of stale electronic-payment allocations. A later provider capture can still recover an expired local allocation.
+
+## Electronic Payment / WhatsApp
+
+- `send_payment_link()` and `resend_payment_link()` now send through the configured WhatsApp adapter and record send count/time/message reference.
+- Native support for the installed `frappe_whatsapp` app's `WhatsApp Message` DocType.
+- Optional approved `WhatsApp Templates` name. This is recommended when initiating a conversation outside Meta's 24-hour customer-service window.
+- The template reference document is `POS Payment Allocation`, so templates can use payment allocation fields and a dynamic URL can point at `payment_url`.
+- Optional custom dotted sender method for installations that use another Meta/WhatsApp integration.
+
+## Saved drafts
+
+- `save_pos_draft()` records `draft_saved_at`.
+- The cashier can send the payment link, leave the sale in the Waiting queue, and immediately serve the next customer.
+
+## Complete & Print backend
+
+`complete_pos_session()`:
+
+1. Requires the session to be `Ready to Complete`.
+2. Uses an existing draft invoice or a saved/passed JSON invoice payload.
+3. Aggregates captured POS allocations by ERPNext Mode of Payment and attaches them to the invoice when the target DocType has a `payments` table.
+4. Validates the invoice total against the POS Payment Session total.
+5. Optionally submits the invoice.
+6. Relinks Gateway Transactions from the temporary POS Payment Session to the final invoice.
+7. Marks the session `Completed` exactly once.
+8. Returns a Frappe print route and print-view URL for the POS adapter to print.
+
+The backend does not directly control a cashier's local printer. POSNext/POS Awesome will open the returned print route after completion.
+
+## Cancellation safety
+
+- Captured allocations cannot be cancelled; they must be refunded through the original-provider refund flow.
+- Pending allocations can be locally cancelled. If a remote payment link later captures, the provider webhook is authoritative and restores the allocation to Captured.
+- A whole session cannot be cancelled after any money has been captured.
+
+## New / expanded APIs
+
+- `erpnext_payment_hub.pos.api.get_sales_queue`
+- `erpnext_payment_hub.pos.api.get_sales_queue_counts`
+- `erpnext_payment_hub.pos.api.send_payment_link`
+- `erpnext_payment_hub.pos.api.resend_payment_link`
+- `erpnext_payment_hub.pos.api.check_session_payments`
+- `erpnext_payment_hub.pos.api.cancel_pos_payment`
+- `erpnext_payment_hub.pos.api.cancel_pos_session`
+- `erpnext_payment_hub.pos.api.complete_pos_session`
+- `erpnext_payment_hub.pos.api.finalize_pos_session` remains as a backward-compatible alias.
+
+## WhatsApp note
+
+The configured `frappe_whatsapp` integration uses Meta WhatsApp Cloud API. Free-form outbound text is subject to Meta's customer-service window. For a cashier-initiated payment request, configure an approved payment-link template in Payment Hub Settings when required by Meta policy.

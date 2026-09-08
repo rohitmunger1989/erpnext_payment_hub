@@ -18,9 +18,15 @@
     "physical_mode_of_payment",
     "electronic_mode_of_payment",
     "whatsapp_integration",
+    "whatsapp_account_name",
+    "whatsapp_template_name",
+    "whatsapp_sender_method",
+    "payment_link_message_template",
     "async_electronic_payment",
     "after_electronic_capture",
-    "payment_link_expiry_minutes"
+    "default_print_format",
+    "payment_link_expiry_minutes",
+    "auto_expire_pending_sales"
   ],
   "fields": [
     {
@@ -113,6 +119,42 @@
       "label": "Payment Link / Pending Sale Expiry (Minutes)",
       "fieldtype": "Int",
       "default": "30"
+    },
+    {
+      "fieldname": "whatsapp_account_name",
+      "label": "WhatsApp Account (Optional)",
+      "fieldtype": "Data",
+      "description": "Name of the outgoing WhatsApp Account in frappe_whatsapp. Leave blank to use its default outgoing account."
+    },
+    {
+      "fieldname": "whatsapp_template_name",
+      "label": "Payment Link WhatsApp Template",
+      "fieldtype": "Data",
+      "description": "Optional approved frappe_whatsapp template. Recommended when initiating a conversation outside Meta's 24-hour service window."
+    },
+    {
+      "fieldname": "whatsapp_sender_method",
+      "label": "Custom WhatsApp Sender Method",
+      "fieldtype": "Data",
+      "description": "Optional dotted Python method. Called with to, message, reference_doctype, reference_name, allocation and session."
+    },
+    {
+      "fieldname": "payment_link_message_template",
+      "label": "Payment Link Message Template",
+      "fieldtype": "Small Text",
+      "default": "Payment request {session}\nAmount: {currency} {amount}\nPlease complete your payment using the secure link below:\n{payment_url}"
+    },
+    {
+      "fieldname": "default_print_format",
+      "label": "Default POS Print Format",
+      "fieldtype": "Data",
+      "default": "Standard"
+    },
+    {
+      "fieldname": "auto_expire_pending_sales",
+      "label": "Auto Expire Stale Pending Sales",
+      "fieldtype": "Check",
+      "default": "1"
     }
   ],
   "permissions": [

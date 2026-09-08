@@ -21,6 +21,8 @@ def after_install():
     settings.async_electronic_payment = 1
     settings.after_electronic_capture = "Mark Paid Only"
     settings.payment_link_expiry_minutes = 30
+    settings.auto_expire_pending_sales = 1
+    settings.default_print_format = "Standard"
     settings.save(ignore_permissions=True)
 
     for account_name, provider in PROVIDERS:
