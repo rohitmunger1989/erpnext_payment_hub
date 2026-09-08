@@ -1,0 +1,58 @@
+{
+  "doctype": "DocType",
+  "name": "Payment Hub Settings",
+  "module": "ERPNext Payment Hub",
+  "issingle": 1,
+  "editable_grid": 1,
+  "track_changes": 1,
+  "field_order": [
+    "default_provider",
+    "force_original_payment_method_refund",
+    "allow_partial_refund",
+    "verify_by_status_api",
+    "auto_reconcile"
+  ],
+  "fields": [
+    {
+      "fieldname": "default_provider",
+      "label": "Default Provider",
+      "fieldtype": "Link",
+      "options": "Payment Provider Account"
+    },
+    {
+      "fieldname": "force_original_payment_method_refund",
+      "label": "Force Original Provider for Refund",
+      "fieldtype": "Check",
+      "default": "1"
+    },
+    {
+      "fieldname": "allow_partial_refund",
+      "label": "Allow Partial Refund",
+      "fieldtype": "Check",
+      "default": "1"
+    },
+    {
+      "fieldname": "verify_by_status_api",
+      "label": "Verify Webhooks with Status API",
+      "fieldtype": "Check",
+      "default": "1"
+    },
+    {
+      "fieldname": "auto_reconcile",
+      "label": "Auto Reconcile",
+      "fieldtype": "Check",
+      "default": "1"
+    }
+  ],
+  "permissions": [
+    {
+      "role": "System Manager",
+      "read": 1,
+      "write": 1,
+      "create": 1,
+      "delete": 1
+    }
+  ],
+  "sort_field": "modified",
+  "sort_order": "DESC"
+}

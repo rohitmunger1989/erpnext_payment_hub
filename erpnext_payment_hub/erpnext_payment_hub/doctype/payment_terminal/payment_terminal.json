@@ -1,0 +1,145 @@
+{
+  "doctype": "DocType",
+  "name": "Payment Terminal",
+  "module": "ERPNext Payment Hub",
+  "autoname": "field:terminal_name",
+  "title_field": "terminal_name",
+  "track_changes": 1,
+  "field_order": [
+    "terminal_name",
+    "enabled",
+    "provider_account",
+    "provider",
+    "mapping_section",
+    "company",
+    "branch",
+    "pos_profile",
+    "warehouse",
+    "terminal_section",
+    "terminal_id",
+    "device_id",
+    "merchant_id_override",
+    "priority",
+    "is_default_for_branch",
+    "notes"
+  ],
+  "fields": [
+    {
+      "fieldname": "terminal_name",
+      "label": "Terminal Name",
+      "fieldtype": "Data",
+      "reqd": 1,
+      "unique": 1,
+      "in_list_view": 1
+    },
+    {
+      "fieldname": "enabled",
+      "label": "Enabled",
+      "fieldtype": "Check",
+      "default": "1",
+      "in_list_view": 1
+    },
+    {
+      "fieldname": "provider_account",
+      "label": "Provider Account",
+      "fieldtype": "Link",
+      "options": "Payment Provider Account",
+      "reqd": 1,
+      "in_list_view": 1
+    },
+    {
+      "fieldname": "provider",
+      "label": "Provider",
+      "fieldtype": "Data",
+      "read_only": 1
+    },
+    {
+      "fieldname": "mapping_section",
+      "label": "ERPNext Mapping",
+      "fieldtype": "Section Break"
+    },
+    {
+      "fieldname": "company",
+      "label": "Company",
+      "fieldtype": "Link",
+      "options": "Company"
+    },
+    {
+      "fieldname": "branch",
+      "label": "Branch",
+      "fieldtype": "Link",
+      "options": "Branch",
+      "in_list_view": 1
+    },
+    {
+      "fieldname": "pos_profile",
+      "label": "POS Profile",
+      "fieldtype": "Link",
+      "options": "POS Profile",
+      "in_list_view": 1
+    },
+    {
+      "fieldname": "warehouse",
+      "label": "Warehouse",
+      "fieldtype": "Link",
+      "options": "Warehouse"
+    },
+    {
+      "fieldname": "terminal_section",
+      "label": "Provider Terminal",
+      "fieldtype": "Section Break"
+    },
+    {
+      "fieldname": "terminal_id",
+      "label": "Terminal ID",
+      "fieldtype": "Data",
+      "reqd": 1,
+      "in_list_view": 1
+    },
+    {
+      "fieldname": "device_id",
+      "label": "Device ID / Serial",
+      "fieldtype": "Data"
+    },
+    {
+      "fieldname": "merchant_id_override",
+      "label": "Merchant ID Override",
+      "fieldtype": "Data"
+    },
+    {
+      "fieldname": "priority",
+      "label": "Priority",
+      "fieldtype": "Int",
+      "default": "10"
+    },
+    {
+      "fieldname": "is_default_for_branch",
+      "label": "Default for Branch",
+      "fieldtype": "Check",
+      "default": "0"
+    },
+    {
+      "fieldname": "notes",
+      "label": "Notes",
+      "fieldtype": "Small Text"
+    }
+  ],
+  "permissions": [
+    {
+      "role": "System Manager",
+      "read": 1,
+      "write": 1,
+      "create": 1,
+      "delete": 1
+    },
+    {
+      "role": "Accounts Manager",
+      "read": 1,
+      "write": 0,
+      "create": 0,
+      "delete": 0
+    }
+  ],
+  "sort_field": "priority",
+  "sort_order": "ASC"
+}

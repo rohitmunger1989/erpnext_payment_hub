@@ -1,0 +1,105 @@
+{
+  "doctype": "DocType",
+  "name": "Payment Provider Account",
+  "module": "ERPNext Payment Hub",
+  "autoname": "field:account_name",
+  "title_field": "account_name",
+  "track_changes": 1,
+  "field_order": [
+    "account_name",
+    "provider",
+    "status",
+    "test_mode",
+    "white_label",
+    "credentials_section",
+    "api_key",
+    "secret_key",
+    "merchant_id",
+    "webhook_secret",
+    "terminal_id",
+    "base_url_override"
+  ],
+  "fields": [
+    {
+      "fieldname": "account_name",
+      "label": "Account Name",
+      "fieldtype": "Data",
+      "reqd": 1,
+      "unique": 1
+    },
+    {
+      "fieldname": "provider",
+      "label": "Provider",
+      "fieldtype": "Select",
+      "options": "Tap Payments\nMyFatoorah\nUPayments",
+      "reqd": 1
+    },
+    {
+      "fieldname": "status",
+      "label": "Status",
+      "fieldtype": "Select",
+      "options": "Test\nActive\nRefund Only\nDisabled",
+      "default": "Disabled",
+      "reqd": 1
+    },
+    {
+      "fieldname": "test_mode",
+      "label": "Test Mode",
+      "fieldtype": "Check",
+      "default": "1"
+    },
+    {
+      "fieldname": "white_label",
+      "label": "White Label",
+      "fieldtype": "Check",
+      "default": "0"
+    },
+    {
+      "fieldname": "credentials_section",
+      "label": "Credentials",
+      "fieldtype": "Section Break"
+    },
+    {
+      "fieldname": "api_key",
+      "label": "API Key / Token",
+      "fieldtype": "Password"
+    },
+    {
+      "fieldname": "secret_key",
+      "label": "Secret Key",
+      "fieldtype": "Password"
+    },
+    {
+      "fieldname": "merchant_id",
+      "label": "Merchant ID",
+      "fieldtype": "Data"
+    },
+    {
+      "fieldname": "webhook_secret",
+      "label": "Webhook Secret",
+      "fieldtype": "Password"
+    },
+    {
+      "fieldname": "terminal_id",
+      "label": "Default Terminal ID",
+      "fieldtype": "Data"
+    },
+    {
+      "fieldname": "base_url_override",
+      "label": "Base URL Override",
+      "fieldtype": "Data",
+      "description": "Optional. Required for UPayments production until the live API base URL is confirmed for your merchant account."
+    }
+  ],
+  "permissions": [
+    {
+      "role": "System Manager",
+      "read": 1,
+      "write": 1,
+      "create": 1,
+      "delete": 1
+    }
+  ],
+  "sort_field": "modified",
+  "sort_order": "DESC"
+}

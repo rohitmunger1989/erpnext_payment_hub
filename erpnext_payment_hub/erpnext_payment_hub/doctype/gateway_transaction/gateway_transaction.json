@@ -1,0 +1,247 @@
+{
+  "doctype": "DocType",
+  "name": "Gateway Transaction",
+  "module": "ERPNext Payment Hub",
+  "autoname": "PGT-.YYYY.-.#####",
+  "title_field": "name",
+  "track_changes": 1,
+  "field_order": [
+    "transaction_type",
+    "status",
+    "provider_account",
+    "provider",
+    "reference_section",
+    "reference_doctype",
+    "reference_name",
+    "original_transaction",
+    "payment_section",
+    "payment_method",
+    "amount",
+    "currency",
+    "refunded_amount",
+    "pos_section",
+    "branch",
+    "pos_profile",
+    "pos_station",
+    "computer_name",
+    "payment_terminal",
+    "terminal_id",
+    "provider_section",
+    "provider_transaction_id",
+    "provider_order_id",
+    "provider_payment_id",
+    "provider_tracking_id",
+    "provider_session_id",
+    "provider_requested_order_id",
+    "provider_payment_type",
+    "provider_refund_id",
+    "payment_url",
+    "response_json"
+  ],
+  "fields": [
+    {
+      "fieldname": "transaction_type",
+      "label": "Transaction Type",
+      "fieldtype": "Select",
+      "options": "Payment\nRefund",
+      "reqd": 1,
+      "in_list_view": 1
+    },
+    {
+      "fieldname": "status",
+      "label": "Status",
+      "fieldtype": "Select",
+      "options": "Pending\nCaptured\nFailed\nRefunded\nRequested",
+      "default": "Pending",
+      "in_list_view": 1
+    },
+    {
+      "fieldname": "provider_account",
+      "label": "Provider Account",
+      "fieldtype": "Link",
+      "options": "Payment Provider Account",
+      "reqd": 1,
+      "in_list_view": 1
+    },
+    {
+      "fieldname": "provider",
+      "label": "Provider",
+      "fieldtype": "Data",
+      "read_only": 1
+    },
+    {
+      "fieldname": "reference_section",
+      "label": "ERPNext Reference",
+      "fieldtype": "Section Break"
+    },
+    {
+      "fieldname": "reference_doctype",
+      "label": "Reference DocType",
+      "fieldtype": "Link",
+      "options": "DocType"
+    },
+    {
+      "fieldname": "reference_name",
+      "label": "Reference Name",
+      "fieldtype": "Dynamic Link",
+      "options": "reference_doctype",
+      "in_list_view": 1
+    },
+    {
+      "fieldname": "original_transaction",
+      "label": "Original Transaction",
+      "fieldtype": "Link",
+      "options": "Gateway Transaction"
+    },
+    {
+      "fieldname": "payment_section",
+      "label": "Payment",
+      "fieldtype": "Section Break"
+    },
+    {
+      "fieldname": "payment_method",
+      "label": "Payment Method",
+      "fieldtype": "Data"
+    },
+    {
+      "fieldname": "amount",
+      "label": "Amount",
+      "fieldtype": "Currency",
+      "precision": "3",
+      "reqd": 1,
+      "in_list_view": 1
+    },
+    {
+      "fieldname": "currency",
+      "label": "Currency",
+      "fieldtype": "Link",
+      "options": "Currency",
+      "default": "KWD"
+    },
+    {
+      "fieldname": "refunded_amount",
+      "label": "Refunded / Reserved Amount",
+      "fieldtype": "Currency",
+      "precision": "3",
+      "default": "0"
+    },
+    {
+      "fieldname": "provider_section",
+      "label": "Provider References",
+      "fieldtype": "Section Break"
+    },
+    {
+      "fieldname": "provider_transaction_id",
+      "label": "Provider Transaction ID",
+      "fieldtype": "Data"
+    },
+    {
+      "fieldname": "provider_order_id",
+      "label": "Provider Order ID",
+      "fieldtype": "Data"
+    },
+    {
+      "fieldname": "provider_payment_id",
+      "label": "Provider Payment ID",
+      "fieldtype": "Data"
+    },
+    {
+      "fieldname": "provider_tracking_id",
+      "label": "Provider Tracking ID",
+      "fieldtype": "Data"
+    },
+    {
+      "fieldname": "provider_refund_id",
+      "label": "Provider Refund ID",
+      "fieldtype": "Data"
+    },
+    {
+      "fieldname": "payment_url",
+      "label": "Payment URL",
+      "fieldtype": "Small Text"
+    },
+    {
+      "fieldname": "response_json",
+      "label": "Last Provider Response",
+      "fieldtype": "Code",
+      "options": "JSON",
+      "read_only": 1
+    },
+    {
+      "fieldname": "pos_section",
+      "label": "POS / Terminal",
+      "fieldtype": "Section Break"
+    },
+    {
+      "fieldname": "branch",
+      "label": "Branch",
+      "fieldtype": "Link",
+      "options": "Branch"
+    },
+    {
+      "fieldname": "pos_profile",
+      "label": "POS Profile",
+      "fieldtype": "Link",
+      "options": "POS Profile"
+    },
+    {
+      "fieldname": "payment_terminal",
+      "label": "Payment Terminal",
+      "fieldtype": "Link",
+      "options": "Payment Terminal"
+    },
+    {
+      "fieldname": "terminal_id",
+      "label": "Terminal ID",
+      "fieldtype": "Data",
+      "read_only": 1
+    },
+    {
+      "fieldname": "pos_station",
+      "label": "POS Station",
+      "fieldtype": "Link",
+      "options": "POS Station"
+    },
+    {
+      "fieldname": "computer_name",
+      "label": "Computer Name",
+      "fieldtype": "Data",
+      "read_only": 1
+    },
+    {
+      "fieldname": "provider_session_id",
+      "label": "Provider Session ID",
+      "fieldtype": "Data"
+    },
+    {
+      "fieldname": "provider_payment_type",
+      "label": "Provider Payment Type",
+      "fieldtype": "Data",
+      "read_only": 1
+    },
+    {
+      "fieldname": "provider_requested_order_id",
+      "label": "Provider Requested Order ID",
+      "fieldtype": "Data",
+      "read_only": 1
+    }
+  ],
+  "permissions": [
+    {
+      "role": "System Manager",
+      "read": 1,
+      "write": 1,
+      "create": 1,
+      "delete": 1
+    },
+    {
+      "role": "Accounts Manager",
+      "read": 1,
+      "write": 0,
+      "create": 0,
+      "delete": 0
+    }
+  ],
+  "sort_field": "creation",
+  "sort_order": "DESC"
+}
