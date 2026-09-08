@@ -94,6 +94,7 @@ def build_print_result(doc, print_format=None):
         "doctype": doc.doctype,
         "name": doc.name,
         "docstatus": doc.docstatus,
+        "submitted": doc.docstatus == 1,
         "print_format": print_format,
         "print_route": ["print", doc.doctype, doc.name],
         "print_url": f"{base}/printview?doctype={doctype}&name={name}&format={fmt}",

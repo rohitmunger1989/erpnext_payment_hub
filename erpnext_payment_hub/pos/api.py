@@ -533,49 +533,89 @@ def complete_pos_session(
     submit=1,
     print_format=None,
 ):
-    session = recalculate_session(session_name)
+    submit_requested = bool(cint(submit)) if isinstance(submit, (str, int, bool)) else bool(submit)
+    session = frappe.get_doc("POS Payment Session", session_name)
+
+    # v0.2.1 could mark a session Completed even when submit=0 created only a draft
+    # invoice. Repair that state lazily so the same draft can be safely submitted.
     if session.finalized:
         if not session.invoice_doctype or not session.invoice_name:
             frappe.throw(f"Session {session.name} is finalized but invoice reference is missing.")
         from erpnext_payment_hub.pos.invoice import build_print_result
-        doc = frappe.get_doc(session.invoice_doctype, session.invoice_name)
-        return {"session": _session_response(session), "invoice": build_print_result(doc, print_format)}
+        existing_doc = frappe.get_doc(session.invoice_doctype, session.invoice_name)
+        if existing_doc.docstatus == 1:
+            session.status = "Completed"
+            session.save(ignore_permissions=True)
+            return {
+                "session": _session_response(session),
+                "invoice": build_print_result(existing_doc, print_format),
+            }
+        if existing_doc.docstatus == 2:
+            frappe.throw(
+                f"Final invoice {existing_doc.doctype} {existing_doc.name} is cancelled. "
+                "Create or select a valid invoice before completing this session."
+            )
+        session.finalized = 0
+        session.completed_at = None
+        session.completed_by = None
+        session.save(ignore_permissions=True)
 
+    session = recalculate_session(session)
     if session.status != "Ready to Complete" or flt(session.confirmed_paid_amount, 3) < flt(session.grand_total, 3):
         frappe.throw(
             f"Session {session.name} is not Ready to Complete. "
             f"Confirmed {flt(session.confirmed_paid_amount,3):.3f} / {flt(session.grand_total,3):.3f} {session.currency}."
         )
 
+    # Reuse a draft invoice already created for this session. This makes draft
+    # creation idempotent and prevents a second invoice on the submit call.
+    effective_invoice_name = invoice_name or session.invoice_name
+    if effective_invoice_name and not invoice_name and session.invoice_doctype:
+        effective_invoice_doctype = session.invoice_doctype
+    else:
+        effective_invoice_doctype = invoice_doctype or "Sales Invoice"
+
     from erpnext_payment_hub.pos.invoice import create_or_update_invoice
     doc, invoice_result = create_or_update_invoice(
         session,
-        invoice_doctype=invoice_doctype or "Sales Invoice",
-        invoice_name=invoice_name,
+        invoice_doctype=effective_invoice_doctype,
+        invoice_name=effective_invoice_name,
         invoice_payload=invoice_payload,
-        submit=bool(cint(submit)) if isinstance(submit, (str, int, bool)) else bool(submit),
+        submit=submit_requested,
         print_format=print_format,
     )
 
     session.invoice_doctype = doc.doctype
     session.invoice_name = doc.name
-    session.finalized = 1
-    session.status = "Completed"
-    session.completed_at = now_datetime()
-    session.completed_by = frappe.session.user
     session.last_error = None
+
+    if doc.docstatus == 1:
+        session.finalized = 1
+        session.status = "Completed"
+        session.completed_at = session.completed_at or now_datetime()
+        session.completed_by = session.completed_by or frappe.session.user
+    else:
+        # A saved draft is not a completed sale. Keep the fully paid session in
+        # Ready to Complete so the cashier can resume and submit the same invoice.
+        session.finalized = 0
+        session.status = "Ready to Complete"
+        session.completed_at = None
+        session.completed_by = None
     session.save(ignore_permissions=True)
 
-    txns = frappe.get_all(
-        "Gateway Transaction",
-        filters={"pos_payment_session": session.name, "transaction_type": "Payment"},
-        pluck="name",
-    )
-    for name in txns:
-        txn = frappe.get_doc("Gateway Transaction", name)
-        txn.reference_doctype = doc.doctype
-        txn.reference_name = doc.name
-        txn.save(ignore_permissions=True)
+    # Gateway references become accounting references only after the invoice is
+    # submitted. Until then they remain tied to the POS Payment Session.
+    if doc.docstatus == 1:
+        txns = frappe.get_all(
+            "Gateway Transaction",
+            filters={"pos_payment_session": session.name, "transaction_type": "Payment"},
+            pluck="name",
+        )
+        for name in txns:
+            txn = frappe.get_doc("Gateway Transaction", name)
+            txn.reference_doctype = doc.doctype
+            txn.reference_name = doc.name
+            txn.save(ignore_permissions=True)
 
     return {"session": _session_response(session), "invoice": invoice_result}
 

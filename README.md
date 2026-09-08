@@ -501,6 +501,32 @@ This release adds a provider-agnostic POS payment session layer designed to be s
 POSNext and POS Awesome frontend adapters are intentionally not patched in this release. Both will call this same backend in the next integration step.
 
 
+# v0.2.2 — Draft Finalization Safety
+
+This release hardens `Complete & Print` before the POSNext frontend adapter is connected.
+
+## Completion safety
+
+- `complete_pos_session(..., submit=0)` now creates or updates a draft invoice **without** marking the POS Payment Session `Completed`.
+- A fully paid session with a draft invoice remains `Ready to Complete`, keeps `finalized = 0`, and stores the draft invoice reference for recovery.
+- A later `complete_pos_session(..., submit=1)` automatically reuses that same draft invoice instead of creating a duplicate.
+- The session becomes `Completed` only after the final invoice has `docstatus = 1`.
+- Gateway Transactions are relinked from the temporary POS Payment Session to the final invoice only after successful submission.
+- v0.2.1 sessions that were incorrectly marked finalized while their invoice is still a draft are repaired automatically the next time `complete_pos_session()` is called.
+- Print results now include `submitted: true/false` in addition to `docstatus`.
+
+## Backend flow validated before this release
+
+- Cash + electronic split payments.
+- Tap sandbox KNET capture with allocation/session synchronization.
+- Pending Sales Waiting / Paid / Failed queues.
+- Approved `frappe_whatsapp` payment-request template sending and send tracking.
+- Waiting -> payment capture -> `Ready to Complete`.
+- Draft invoice creation, ERPNext payment-row attachment, and print URL generation.
+
+POSNext and POS Awesome frontend adapters remain intentionally separate from the provider logic and will call this common backend.
+
+
 # v0.2.1 — Pending Sales + Complete & Print Backend
 
 This release builds the cashier-facing backend workflow on top of the tested v0.2.0 split-payment session engine. POSNext and POS Awesome still share the same backend; their frontend adapters are the next step.
