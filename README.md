@@ -1,4 +1,4 @@
-# ERPNext Payment Hub — Phase 1 v0.1.2
+# ERPNext Payment Hub — v0.6.0
 
 Provider-agnostic payment gateway foundation for ERPNext.
 
@@ -41,18 +41,14 @@ Included:
 - Server-to-server webhook verification by re-querying payment status
 - KWD 3-decimal handling
 
-Not yet included:
+Still not included:
 
-- ERPNext POS payment modal/buttons
-- Physical SmartPOS / ECR terminal control
-- Automatic Payment Entry creation
-- Automatic POS Invoice submit after capture
+- Physical SmartPOS / ECR terminal control (the POSNext adapter blocks this mode until the terminal API is validated)
+- Automatic standalone Payment Entry creation
+- Automatic unattended POS Invoice submit after capture (v0.3.0 uses cashier **Complete & Print**)
 - Refund status polling scheduler
-- Store-to-terminal mapping
 - Reconciliation dashboard
 - Provider-specific webhook signature validation
-
-Those belong in Phase 2 after Phase 1 is installed and tested.
 
 ## Install for local testing
 
@@ -589,3 +585,349 @@ The backend does not directly control a cashier's local printer. POSNext/POS Awe
 ## WhatsApp note
 
 The configured `frappe_whatsapp` integration uses Meta WhatsApp Cloud API. Free-form outbound text is subject to Meta's customer-service window. For a cashier-initiated payment request, configure an approved payment-link template in Payment Hub Settings when required by Meta policy.
+
+
+## v0.3.0 — POSNext asynchronous electronic payment adapter
+
+This release adds the first production-shaped POS frontend adapter flow while
+keeping provider logic inside Payment Hub.
+
+### POSNext flow
+
+- Cash-only sales continue through normal POSNext behavior.
+- Cash + **Electronic Payment** split sales are handed to Payment Hub.
+- The current POS cart is saved on a **POS Payment Session** before the cashier
+  leaves the sale.
+- Payment Hub creates the configured provider payment link (Tap, UPayments, or
+  MyFatoorah), sends it through the configured WhatsApp integration, and places
+  the sale in the **Waiting** queue.
+- POSNext can clear the cart immediately so the cashier can serve the next
+  customer.
+- The queue exposes **Waiting**, **Paid / Ready to Complete**, and **Failed**
+  states.
+- Cashiers can manually check a waiting payment or resend its WhatsApp link.
+- **Complete & Print** submits the saved Sales Invoice only after the session is
+  fully captured and then prints the submitted invoice.
+
+### Common adapter API
+
+`erpnext_payment_hub.pos.api.begin_async_electronic_sale` creates the session,
+saves the invoice payload, creates the electronic allocation, records an
+optional cash split, and sends the WhatsApp payment request in one idempotent
+frontend call.
+
+The online provider still comes from **Payment Hub Settings**, so POSNext does
+not contain Tap / MyFatoorah / UPayments-specific code.
+
+### Safety
+
+- Electronic Payment is online-only.
+- The first POSNext adapter supports **Cash + Electronic Payment** splits.
+- Other mixed payment modes are rejected when Electronic Payment is used until
+  dedicated allocation adapters are added.
+- Physical Payment Terminal remains blocked in the POSNext adapter until a
+  terminal API is configured and validated; it must not be treated as captured
+  merely because the cashier selected the mode.
+
+
+## v0.3.1 — POSNext payment-mode routing fix
+
+This maintenance release fixes the first POSNext adapter test where selecting
+**Electronic Payment** could still fall through to POSNext's normal invoice
+submission path instead of Payment Hub.
+
+- POSNext now normalizes payment-mode names before routing them.
+- The literal safety aliases `Electronic Payment`, `Physical Payment Terminal`,
+  and `Cash` remain recognized even if the frontend configuration response is
+  wrapped or contains harmless casing/whitespace differences.
+- Payment Hub API responses are unwrapped defensively in the POSNext adapter and
+  queue dialog.
+- The WhatsApp mobile field now follows the same normalized Electronic Payment
+  detection used by the submission handler.
+- Cash-only POSNext sales remain unchanged.
+- Physical Payment Terminal remains blocked until terminal integration is
+  implemented and validated.
+
+
+## v0.3.2 — concurrent gateway callback safety
+
+This maintenance release hardens gateway status updates when a provider webhook,
+browser return URL, manual **Check Payment**, or scheduled reconciliation reaches
+the same transaction at nearly the same time.
+
+- Retries `Gateway Transaction` saves after Frappe `TimestampMismatchError` by
+  reloading the latest row and re-applying the verified provider status.
+- Applies the same retry protection to POS Payment Allocation and POS Payment
+  Session recalculation.
+- Prevents late `Pending` or `Failed` responses from downgrading a payment that
+  has already been confirmed `Captured` or `Refunded`.
+- Keeps POS allocation/session synchronization idempotent when duplicate Tap
+  return/webhook events arrive within milliseconds.
+- No provider-specific behavior was added to POSNext.
+
+## v0.4.0 — POSNext Return Sale + original-payment refund
+
+This release adds Payment Hub-managed POS returns while preserving the normal
+POSNext return flow for invoices that were not paid through Payment Hub.
+
+### Return/refund flow
+
+- A Payment Hub Sales Invoice is matched back to its finalized POS Payment Session.
+- Return refunds are locked to the **original payment allocation**. Cashiers cannot
+  switch an electronic payment to another gateway, cash, or a different terminal.
+- Cash allocations are recorded as cash refunds.
+- Electronic allocations call the **original Gateway Transaction / original provider
+  account**, so changing the default provider later does not affect old refunds.
+- Split payments remain split: each original allocation has its own refundable limit.
+- Full and partial returns are supported up to the remaining refundable amount.
+- A new `POS Refund Allocation` audit DocType links the original invoice, return
+  draft, source allocation, source gateway transaction, refund gateway transaction,
+  amount, provider and status.
+- Refund reservations are persisted before external provider calls to reduce the
+  risk of duplicate refunds from double-clicks or concurrent cashier requests.
+- The return Sales Invoice is created as **Draft first**. It is submitted only after
+  all Payment Hub refund allocations are confirmed `Completed`.
+- Provider refunds that are still pending keep the return invoice in Draft and can
+  be checked again with `refresh_return_refunds()`.
+- Uncertain external errors are marked **Manual Review** instead of automatically
+  repeating a possibly-successful provider refund.
+- Refund gateway transactions are anchored to the Return Sales Invoice for
+  idempotent recovery and audit.
+
+### POSNext UI behavior
+
+- Payment Hub returns show **Refund to Original Payment** instead of a free payment
+  method selector.
+- The original provider/payment method and maximum refundable amount are displayed.
+- `Add to Customer Credit Balance` is disabled for Payment Hub-managed sales so the
+  original-source refund rule is preserved.
+- `Check Refund` is available when a provider refund is pending.
+- Invoice Details no longer labels every return with a payment row as **Cash Refund**.
+  Payment Hub returns show provider-aware refund details; legacy/non-Payment-Hub
+  electronic returns show the neutral **Refund Recorded** label.
+
+### APIs
+
+- `erpnext_payment_hub.pos.refund.get_refund_plan`
+- `erpnext_payment_hub.pos.refund.process_pos_return_refund`
+- `erpnext_payment_hub.pos.refund.get_return_refund_status`
+- `erpnext_payment_hub.pos.refund.refresh_return_refunds`
+
+Physical Payment Terminal refunds remain blocked until the terminal refund adapter
+is implemented and validated.
+
+
+# v0.5.0 — Transaction History, Refund Authorization & Daily Report
+
+This release adds cashier-facing transaction lookup, manager-controlled refund security,
+and daily payment/refund reconciliation while keeping the original-provider refund rule.
+
+## Transaction History
+
+POSNext Payment Hub now includes a **Transaction History** view. Search by:
+
+- customer mobile number or name
+- Sales Invoice / Return Invoice
+- POS Payment Session / allocation
+- Gateway Transaction
+- provider transaction, payment, tracking or refund ID
+
+History shows submitted payments, Payment Hub gateway status, refunds, remaining refundable
+amount and pending electronic-payment sessions. Non-Payment-Hub POS invoices are also shown
+from ERPNext payment rows so the lookup is useful for normal Cash / legacy POS payments.
+
+Backend API:
+
+```text
+erpnext_payment_hub.pos.reporting.search_transaction_history
+```
+
+## Refund authorization
+
+New roles:
+
+- **Payment Hub Refund Approver** — can authorize electronic / terminal refunds.
+- **Payment Hub Refund Override** — can authorize a refund and change the refund method.
+- **Payment Hub Auditor** — read-only audit/report role.
+
+By default:
+
+- Cash refunds do not require manager authorization.
+- Electronic Payment refunds require manager/admin authorization.
+- Physical Payment Terminal refunds require manager/admin authorization.
+- An override requires the **Payment Hub Refund Override** role.
+
+The POS cashier enters the manager's own ERPNext username/email and password in a secure
+authorization dialog. Password verification happens server-side. Payment Hub **never stores
+the plaintext password**.
+
+Successful authorization creates a **Payment Hub Refund Authorization** audit record containing:
+
+- cashier/requesting user
+- authorized manager
+- authorization time
+- original and return invoice
+- amount
+- original payment sources
+- override target and reason (when applicable)
+
+Authorization is short-lived (default 5 minutes) and bound to the exact return draft / amount.
+
+### Refund-method override
+
+The default refund remains locked to the original payment source/provider. v0.5.0 allows an
+audited manager override to the configured **Cash** Mode of Payment only. Cross-provider refunds
+(e.g. Tap payment refunded through MyFatoorah) are intentionally not represented as gateway
+refunds because a different provider cannot refund the original charge.
+
+The original provider transaction remains in the audit record while the actual cash refund,
+manager and override reason are stored separately.
+
+
+## v0.5.1 security migration
+
+v0.5.1 fixes an upgrade edge case for sites that already had **Payment Hub Settings** before
+v0.5.0. Frappe can materialize newly-added Check fields as `0` on an existing Single DocType,
+so the intended secure JSON defaults were not automatically applied on some upgraded sites.
+
+The one-time v0.5.1 migration explicitly enables:
+
+- manager authorization for **Electronic Payment** refunds;
+- manager authorization for **Physical Payment Terminal** refunds;
+- the audited refund-method override feature (still restricted by the **Payment Hub Refund Override** role);
+- a 5-minute authorization lifetime when no valid value exists.
+
+Cash refunds remain policy-configurable and default to no manager authorization. After this
+one-time migration, administrators can change these options normally in **Payment Hub Settings**;
+the patch is not re-run on every migrate.
+
+## Daily Payment & Refund Report
+
+New Desk Script Report:
+
+```text
+Payment Hub Daily Transactions
+```
+
+The report uses submitted ERPNext POS invoice payment rows as the complete daily source and
+enriches Payment Hub-managed rows with gateway/refund metadata. This means normal Cash / legacy
+POS payments are included as well as Payment Hub electronic transactions.
+
+Filters include date range, POS Profile, cashier, transaction type, channel, provider, status and
+free-text search.
+
+Summary includes:
+
+- total payments
+- total refunds
+- net collection
+- payment/refund/net totals by channel
+- payment/refund/net totals by provider
+
+Backend API used by POSNext:
+
+```text
+erpnext_payment_hub.pos.reporting.get_daily_transaction_report
+```
+
+## POSNext UI
+
+The Payment Hub dialog now contains:
+
+1. **Sales Queues** — Waiting / Paid / Failed, automatic refresh, WhatsApp resend count/status.
+2. **Transaction History** — customer/mobile/invoice/provider transaction/refund lookup.
+3. **Daily Report** — current POS Profile payments, refunds, net and breakdowns.
+
+Electronic and physical-terminal refund processing is blocked until manager/admin authorization
+is successfully verified. Physical terminal provider refunds remain unavailable until the terminal
+refund adapter is implemented; an authorized Cash override can be used when company policy allows.
+
+
+## v0.5.2 return-security hotfix
+
+v0.5.2 closes a second fail-open path found during POS testing: a legacy/non-tracked
+Sales Invoice could contain **Electronic Payment** or **Physical Payment Terminal** accounting
+rows without a linked Payment Hub session. POSNext then treated the return as a normal editable
+return, allowing a cashier to change the refund to Cash without creating a Payment Hub refund
+allocation or manager authorization.
+
+### Fail-closed server validation
+
+Payment Hub now registers a server-side `Sales Invoice.before_submit` guard. UI controls are no
+longer the security boundary. For returns against an original Electronic/Physical payment:
+
+- a Payment Hub-managed original must have completed `POS Refund Allocation` rows before the
+  return invoice can submit;
+- any source that requires approval must have a linked manager authorization;
+- a legacy/untracked Electronic/Physical original cannot be represented as a provider refund;
+- the only supported legacy override is the configured **Cash** Mode of Payment;
+- that Cash override requires a password-verified user with **Payment Hub Refund Override**;
+- a direct POSNext/ERPNext submit call without the authorization is rejected server-side.
+
+Customer-credit returns with no payment rows remain allowed because no cash/card refund is
+released.
+
+### Legacy protected plan in POSNext
+
+`get_refund_plan` now identifies legacy Electronic/Physical invoices even when no Payment Hub
+session exists. POSNext receives a `legacy_protected` plan, locks the original payment, blocks
+direct gateway/terminal refund, and exposes only the audited **Manager Override to Cash** path.
+The manager password is still checked server-side and is never stored.
+
+
+## v0.5.3 POS PDF / Excel exports
+
+v0.5.3 adds direct export buttons to the POSNext Payment Hub dialog for both **Transaction History** and the **Daily Report**.
+
+Supported exports:
+
+- **Excel (.xlsx)** - complete transaction detail including invoice/session, customer/mobile, POS Profile, cashier, payment channel, mode, provider, payment method, signed amount, status, gateway/provider references, manager authorization, override audit data and remaining refundable amount.
+- **PDF** - landscape A4 customer/accounts-friendly transaction report with the key payment/refund audit fields.
+- **Daily Report Excel/PDF** additionally includes Payments, Refunds, Net Collection, channel summary and provider summary before the detail rows.
+
+Exports use the same server-side Sales Invoice read permission check as the Payment Hub history/report APIs. Transaction History exports preserve the current search and POS Profile; Daily Report exports preserve the selected date range and POS Profile.
+
+Backend download endpoint:
+
+```text
+erpnext_payment_hub.pos.reporting.download_transaction_export
+```
+
+
+## v0.6.0 — ERPNext Desk Workspace & Reporting
+
+v0.6.0 adds a native Frappe/ERPNext v16 Desk experience for Payment Hub. The app now declares the standard `add_to_apps_screen` hook and a public **Payment Hub** workspace, so a fresh install/migrate can expose a Payment Hub icon on the Desk without manual workspace creation.
+
+### Desk navigation
+
+The Payment Hub workspace and curated v16 sidebar provide direct access to:
+
+- Gateway Transactions
+- POS Payment Sessions
+- Payment Allocations
+- Refund Allocations
+- Refund Authorizations
+- Payment Provider Accounts
+- Payment Terminals
+- POS Stations
+- Payment Hub Settings
+
+The app icon is permission-gated to Administrator and users with appropriate Accounts / Payment Hub roles.
+
+### Standard Desk reports
+
+The following standard Script Reports are included and installed with the app:
+
+- **Payment Hub Daily Transactions**
+- **Payment Hub Transaction History**
+- **Payment Hub Refund Audit**
+- **Payment Hub Provider Reconciliation**
+- **Payment Hub Pending Failed Transactions**
+- **Payment Hub Cashier Branch Summary**
+- **Payment Hub Payment Method Summary**
+
+These reports use the same Payment Hub transaction/refund audit data as POSNext. Frappe Desk report actions can be used for normal report export/print workflows, while the POSNext v0.5.3 dialog retains its dedicated PDF and Excel download buttons.
+
+### Frappe Payments dependency
+
+`erpnext_payment_hub` does **not** require the separate `payments` app. Tap Payments, MyFatoorah and UPayments continue to use Payment Hub's provider adapters and audit DocTypes. This keeps installation independent while leaving room for optional compatibility adapters later.

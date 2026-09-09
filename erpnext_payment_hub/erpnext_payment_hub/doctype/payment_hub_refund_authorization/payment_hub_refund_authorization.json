@@ -1,0 +1,213 @@
+{
+  "doctype": "DocType",
+  "name": "Payment Hub Refund Authorization",
+  "module": "ERPNext Payment Hub",
+  "autoname": "PHA-.YYYY.-.#####",
+  "title_field": "name",
+  "track_changes": 1,
+  "field_order": [
+    "status",
+    "action",
+    "people_section",
+    "cashier_user",
+    "authorized_by",
+    "authorized_at",
+    "expires_at",
+    "used_at",
+    "reference_section",
+    "original_invoice",
+    "return_invoice",
+    "amount",
+    "currency",
+    "pos_profile",
+    "pos_station",
+    "source_allocations",
+    "override_section",
+    "is_override",
+    "override_channel",
+    "override_mode_of_payment",
+    "reason",
+    "security_section",
+    "token_hash"
+  ],
+  "fields": [
+    {
+      "fieldname": "status",
+      "label": "Status",
+      "fieldtype": "Select",
+      "options": "Valid\nUsed\nExpired\nRevoked",
+      "default": "Valid",
+      "reqd": 1,
+      "in_list_view": 1
+    },
+    {
+      "fieldname": "action",
+      "label": "Authorization Action",
+      "fieldtype": "Select",
+      "options": "Refund\nRefund Override",
+      "reqd": 1,
+      "in_list_view": 1
+    },
+    {
+      "fieldname": "people_section",
+      "label": "People",
+      "fieldtype": "Section Break"
+    },
+    {
+      "fieldname": "cashier_user",
+      "label": "Requested By / Cashier",
+      "fieldtype": "Link",
+      "options": "User",
+      "reqd": 1,
+      "in_list_view": 1
+    },
+    {
+      "fieldname": "authorized_by",
+      "label": "Authorized By",
+      "fieldtype": "Link",
+      "options": "User",
+      "reqd": 1,
+      "in_list_view": 1
+    },
+    {
+      "fieldname": "authorized_at",
+      "label": "Authorized At",
+      "fieldtype": "Datetime",
+      "read_only": 1,
+      "in_list_view": 1
+    },
+    {
+      "fieldname": "expires_at",
+      "label": "Expires At",
+      "fieldtype": "Datetime",
+      "read_only": 1
+    },
+    {
+      "fieldname": "used_at",
+      "label": "Used At",
+      "fieldtype": "Datetime",
+      "read_only": 1
+    },
+    {
+      "fieldname": "reference_section",
+      "label": "Refund Reference",
+      "fieldtype": "Section Break"
+    },
+    {
+      "fieldname": "original_invoice",
+      "label": "Original Sales Invoice",
+      "fieldtype": "Link",
+      "options": "Sales Invoice",
+      "reqd": 1,
+      "search_index": 1
+    },
+    {
+      "fieldname": "return_invoice",
+      "label": "Return Sales Invoice",
+      "fieldtype": "Link",
+      "options": "Sales Invoice",
+      "reqd": 1,
+      "search_index": 1
+    },
+    {
+      "fieldname": "amount",
+      "label": "Authorized Amount",
+      "fieldtype": "Currency",
+      "precision": "3",
+      "reqd": 1
+    },
+    {
+      "fieldname": "currency",
+      "label": "Currency",
+      "fieldtype": "Link",
+      "options": "Currency",
+      "default": "KWD"
+    },
+    {
+      "fieldname": "pos_profile",
+      "label": "POS Profile",
+      "fieldtype": "Link",
+      "options": "POS Profile"
+    },
+    {
+      "fieldname": "pos_station",
+      "label": "POS Station",
+      "fieldtype": "Link",
+      "options": "POS Station"
+    },
+    {
+      "fieldname": "source_allocations",
+      "label": "Authorized Source Allocations",
+      "fieldtype": "Small Text",
+      "read_only": 1
+    },
+    {
+      "fieldname": "override_section",
+      "label": "Override",
+      "fieldtype": "Section Break"
+    },
+    {
+      "fieldname": "is_override",
+      "label": "Refund Method Override",
+      "fieldtype": "Check",
+      "default": "0",
+      "read_only": 1
+    },
+    {
+      "fieldname": "override_channel",
+      "label": "Override Refund Channel",
+      "fieldtype": "Data",
+      "read_only": 1
+    },
+    {
+      "fieldname": "override_mode_of_payment",
+      "label": "Override Mode of Payment",
+      "fieldtype": "Data",
+      "read_only": 1
+    },
+    {
+      "fieldname": "reason",
+      "label": "Authorization / Override Reason",
+      "fieldtype": "Small Text",
+      "reqd": 1
+    },
+    {
+      "fieldname": "security_section",
+      "label": "Security",
+      "fieldtype": "Section Break"
+    },
+    {
+      "fieldname": "token_hash",
+      "label": "Authorization Token Hash",
+      "fieldtype": "Data",
+      "unique": 1,
+      "hidden": 1,
+      "read_only": 1
+    }
+  ],
+  "permissions": [
+    {
+      "role": "System Manager",
+      "read": 1,
+      "write": 1,
+      "create": 1,
+      "delete": 0
+    },
+    {
+      "role": "Accounts Manager",
+      "read": 1,
+      "write": 0,
+      "create": 0,
+      "delete": 0
+    },
+    {
+      "role": "Payment Hub Auditor",
+      "read": 1,
+      "write": 0,
+      "create": 0,
+      "delete": 0
+    }
+  ],
+  "sort_field": "creation",
+  "sort_order": "DESC"
+}

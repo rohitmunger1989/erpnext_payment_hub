@@ -350,6 +350,116 @@ def create_payment_link(
 
 
 @frappe.whitelist()
+def begin_async_electronic_sale(
+    pos_system,
+    company,
+    grand_total,
+    electronic_amount,
+    mobile_number,
+    draft_payload,
+    currency="KWD",
+    cash_amount=0,
+    customer=None,
+    customer_name=None,
+    email=None,
+    pos_profile=None,
+    branch=None,
+    warehouse=None,
+    computer_name=None,
+    pos_station=None,
+    cart_reference=None,
+    provider_account=None,
+    payment_method="KNET",
+    cash_mode_of_payment=None,
+    electronic_mode_of_payment=None,
+    idempotency_key=None,
+    send_whatsapp=1,
+):
+    """Create an asynchronous POS electronic-payment sale in one idempotent call.
+
+    This is the common frontend adapter entry point for POSNext / POS Awesome.
+    Provider-specific behavior remains inside Payment Hub.
+    """
+    grand_total = flt(grand_total, 3)
+    electronic_amount = flt(electronic_amount, 3)
+    cash_amount = flt(cash_amount, 3)
+
+    if grand_total <= 0:
+        frappe.throw("Grand Total must be greater than zero.")
+    if electronic_amount <= 0:
+        frappe.throw("Electronic Payment amount must be greater than zero.")
+    if cash_amount < 0:
+        frappe.throw("Cash amount cannot be negative.")
+    if abs((cash_amount + electronic_amount) - grand_total) > 0.001:
+        frappe.throw(
+            f"Cash + Electronic Payment must equal the sale total. "
+            f"Allocated {cash_amount + electronic_amount:.3f} / {grand_total:.3f} {currency}."
+        )
+
+    base_key = idempotency_key or cart_reference or make_idempotency("POS", pos_system or "API")
+    session = create_pos_session(
+        pos_system=pos_system,
+        company=company,
+        grand_total=grand_total,
+        currency=currency,
+        customer=customer,
+        customer_name=customer_name,
+        mobile_number=mobile_number,
+        email=email,
+        pos_profile=pos_profile,
+        branch=branch,
+        warehouse=warehouse,
+        computer_name=computer_name,
+        pos_station=pos_station,
+        cart_reference=cart_reference,
+        idempotency_key=f"{base_key}:SESSION",
+        draft_payload=draft_payload,
+    )
+    session_name = session["name"]
+
+    electronic = create_payment_link(
+        session_name=session_name,
+        amount=electronic_amount,
+        mobile_number=mobile_number,
+        provider_account=provider_account,
+        payment_method=payment_method or "KNET",
+        mode_of_payment=electronic_mode_of_payment,
+        idempotency_key=f"{base_key}:ELECTRONIC",
+    )
+
+    if cash_amount > 0:
+        add_cash_allocation(
+            session_name=session_name,
+            amount=cash_amount,
+            mode_of_payment=cash_mode_of_payment,
+            idempotency_key=f"{base_key}:CASH",
+        )
+
+    allocation = electronic["allocation"]
+    send_result = None
+    if cint(send_whatsapp) and allocation.get("status") != "Captured":
+        # Do not duplicate a WhatsApp message when a browser retries the same
+        # request after the server already completed the send.
+        if int(allocation.get("link_send_count") or 0) == 0:
+            send_result = send_payment_link(allocation["name"])
+        else:
+            send_result = {
+                "allocation": allocation,
+                "session": get_pos_session(session_name),
+                "already_sent": True,
+            }
+
+    return {
+        "session": get_pos_session(session_name),
+        "electronic_allocation": _allocation_response(
+            frappe.get_doc("POS Payment Allocation", allocation["name"])
+        ),
+        "payment_message": compose_payment_message(allocation["name"]),
+        "whatsapp": send_result,
+    }
+
+
+@frappe.whitelist()
 def compose_payment_message(allocation_name):
     allocation = frappe.get_doc("POS Payment Allocation", allocation_name)
     session = frappe.get_doc("POS Payment Session", allocation.session)
@@ -778,6 +888,42 @@ def _queue_sessions(queue="Waiting", pos_profile=None, pos_station=None, search=
 @frappe.whitelist()
 def get_sales_queue(queue="Waiting", pos_profile=None, pos_station=None, search=None, limit=50):
     rows = _queue_sessions(queue, pos_profile, pos_station, search, limit)
+    session_names = [row.name for row in rows]
+    latest_electronic = {}
+    if session_names:
+        allocations = frappe.get_all(
+            "POS Payment Allocation",
+            filters={
+                "session": ["in", session_names],
+                "channel": "Electronic Payment",
+            },
+            fields=[
+                "name", "session", "status", "link_send_count", "link_sent_at",
+                "last_whatsapp_message", "gateway_transaction", "provider",
+                "actual_payment_method", "payment_url", "modified",
+            ],
+            order_by="modified desc",
+        )
+        for allocation in allocations:
+            if allocation.session not in latest_electronic:
+                latest_electronic[allocation.session] = allocation
+
+    for row in rows:
+        allocation = latest_electronic.get(row.name)
+        row["electronic_allocation"] = allocation.name if allocation else None
+        row["electronic_status"] = allocation.status if allocation else None
+        row["link_send_count"] = int(allocation.link_send_count or 0) if allocation else 0
+        row["link_sent_at"] = allocation.link_sent_at if allocation else None
+        row["last_whatsapp_message"] = allocation.last_whatsapp_message if allocation else None
+        row["gateway_transaction"] = allocation.gateway_transaction if allocation else None
+        row["provider"] = allocation.provider if allocation else None
+        row["actual_payment_method"] = allocation.actual_payment_method if allocation else None
+        row["whatsapp_status"] = None
+        if allocation and allocation.last_whatsapp_message and frappe.db.exists("DocType", "WhatsApp Message"):
+            row["whatsapp_status"] = frappe.db.get_value(
+                "WhatsApp Message", allocation.last_whatsapp_message, "status"
+            )
+
     return {
         "queue": queue,
         "rows": rows,

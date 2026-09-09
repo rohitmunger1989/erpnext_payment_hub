@@ -1,0 +1,17 @@
+{
+  "doctype": "Report",
+  "name": "Payment Hub Daily Transactions",
+  "module": "ERPNext Payment Hub",
+  "ref_doctype": "Sales Invoice",
+  "report_name": "Payment Hub Daily Transactions",
+  "report_type": "Script Report",
+  "is_standard": "Yes",
+  "disabled": 0,
+  "roles": [
+    {"role": "System Manager"},
+    {"role": "Accounts Manager"},
+    {"role": "Payment Hub Auditor"},
+    {"role": "Payment Hub Refund Approver"},
+    {"role": "Payment Hub Refund Override"}
+  ]
+}

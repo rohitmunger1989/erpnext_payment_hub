@@ -4,6 +4,7 @@ import json
 import uuid
 
 import frappe
+from frappe.exceptions import TimestampMismatchError
 from frappe.utils import add_to_date, flt, now_datetime
 
 from erpnext_payment_hub.gateway import (
@@ -74,45 +75,54 @@ def recalculate_session(session_or_name, *, publish=True):
         if isinstance(session_or_name, str)
         else session_or_name
     )
-    if session.finalized:
-        session.status = "Completed"
-        session.save(ignore_permissions=True)
-        return session
 
-    rows = allocation_rows(session.name)
-    confirmed = sum(flt(r.amount, 3) for r in rows if r.status == "Captured")
-    pending = sum(flt(r.amount, 3) for r in rows if r.status == "Waiting")
-    total = flt(session.grand_total, 3)
-    remaining = max(total - confirmed - pending, 0)
+    for attempt in range(3):
+        if attempt:
+            session.reload()
 
-    old_status = session.status
-    session.confirmed_paid_amount = flt(confirmed, 3)
-    session.pending_amount = flt(pending, 3)
-    session.remaining_amount = flt(remaining, 3)
-    session.last_status_check = now_datetime()
-
-    terminal_statuses = [r.status for r in rows]
-    if confirmed >= total and total > 0:
-        session.status = "Ready to Complete"
-        if not session.paid_at:
-            session.paid_at = now_datetime()
-    elif confirmed > 0:
-        session.status = "Partially Paid"
-    elif pending > 0:
-        session.status = "Payment Pending"
-    elif terminal_statuses and all(x in ("Failed", "Cancelled", "Expired") for x in terminal_statuses):
-        if any(x == "Failed" for x in terminal_statuses):
-            session.status = "Failed"
-        elif any(x == "Expired" for x in terminal_statuses):
-            session.status = "Expired"
+        old_status = session.status
+        if session.finalized:
+            session.status = "Completed"
         else:
-            session.status = "Cancelled"
-    elif session.status not in ("Failed", "Expired", "Cancelled"):
-        session.status = "Draft"
+            rows = allocation_rows(session.name)
+            confirmed = sum(flt(r.amount, 3) for r in rows if r.status == "Captured")
+            pending = sum(flt(r.amount, 3) for r in rows if r.status == "Waiting")
+            total = flt(session.grand_total, 3)
+            remaining = max(total - confirmed - pending, 0)
 
-    session.save(ignore_permissions=True)
-    if publish and old_status != session.status:
-        _publish_session(session)
+            session.confirmed_paid_amount = flt(confirmed, 3)
+            session.pending_amount = flt(pending, 3)
+            session.remaining_amount = flt(remaining, 3)
+            session.last_status_check = now_datetime()
+
+            terminal_statuses = [r.status for r in rows]
+            if confirmed >= total and total > 0:
+                session.status = "Ready to Complete"
+                if not session.paid_at:
+                    session.paid_at = now_datetime()
+            elif confirmed > 0:
+                session.status = "Partially Paid"
+            elif pending > 0:
+                session.status = "Payment Pending"
+            elif terminal_statuses and all(x in ("Failed", "Cancelled", "Expired") for x in terminal_statuses):
+                if any(x == "Failed" for x in terminal_statuses):
+                    session.status = "Failed"
+                elif any(x == "Expired" for x in terminal_statuses):
+                    session.status = "Expired"
+                else:
+                    session.status = "Cancelled"
+            elif session.status not in ("Failed", "Expired", "Cancelled"):
+                session.status = "Draft"
+
+        try:
+            session.save(ignore_permissions=True)
+            if publish and old_status != session.status:
+                _publish_session(session)
+            return session
+        except TimestampMismatchError:
+            if attempt >= 2:
+                raise
+
     return session
 
 
@@ -271,24 +281,38 @@ def sync_allocation_from_gateway(gateway_doc):
         return None
 
     allocation = frappe.get_doc("POS Payment Allocation", allocation_name)
-    old_status = allocation.status
-    allocation.provider_account = gateway_doc.provider_account
-    allocation.provider = gateway_doc.provider
-    allocation.actual_payment_method = gateway_doc.provider_payment_type or allocation.actual_payment_method
-    allocation.payment_url = gateway_doc.payment_url or allocation.payment_url
+    original_status = allocation.status
 
-    if gateway_doc.status == "Captured":
-        allocation.status = "Captured"
-        if not allocation.captured_at:
-            allocation.captured_at = now_datetime()
-    elif gateway_doc.status == "Failed":
-        allocation.status = "Failed"
-    elif gateway_doc.status == "Pending":
-        allocation.status = "Waiting"
+    for attempt in range(3):
+        if attempt:
+            allocation.reload()
 
-    allocation.save(ignore_permissions=True)
+        allocation.provider_account = gateway_doc.provider_account
+        allocation.provider = gateway_doc.provider
+        allocation.actual_payment_method = gateway_doc.provider_payment_type or allocation.actual_payment_method
+        allocation.payment_url = gateway_doc.payment_url or allocation.payment_url
+
+        # Captured/Refunded are terminal confirmations for the local POS queue.
+        # Do not downgrade them when a late callback reports Pending/Failed.
+        if allocation.status not in ("Captured", "Refunded"):
+            if gateway_doc.status == "Captured":
+                allocation.status = "Captured"
+                if not allocation.captured_at:
+                    allocation.captured_at = now_datetime()
+            elif gateway_doc.status == "Failed":
+                allocation.status = "Failed"
+            elif gateway_doc.status == "Pending":
+                allocation.status = "Waiting"
+
+        try:
+            allocation.save(ignore_permissions=True)
+            break
+        except TimestampMismatchError:
+            if attempt >= 2:
+                raise
+
     session = recalculate_session(allocation.session, publish=True)
-    if old_status != allocation.status:
+    if original_status != allocation.status:
         _publish_session(session)
     return allocation
 

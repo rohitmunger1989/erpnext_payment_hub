@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 
 import frappe
+from frappe.exceptions import TimestampMismatchError
 from frappe.utils import flt
 
 from erpnext_payment_hub.providers.base import ProviderError
@@ -193,7 +194,7 @@ def create_gateway_transaction(
     return doc
 
 
-def update_transaction_from_status(doc, normalized):
+def _apply_normalized_status(doc, normalized):
     for field in (
         "provider_transaction_id",
         "provider_order_id",
@@ -210,9 +211,35 @@ def update_transaction_from_status(doc, normalized):
     if normalized.get("requested_order_id"):
         doc.provider_requested_order_id = normalized.get("requested_order_id")
 
-    doc.status = normalize_status(doc.provider, normalized.get("status"))
+    incoming_status = normalize_status(doc.provider, normalized.get("status"))
+
+    # Provider callbacks, return redirects, manual checks, and the scheduler can
+    # arrive at almost the same time. Never let a late Pending/Failed response
+    # downgrade a transaction that has already been confirmed as Captured or
+    # Refunded.
+    if doc.status in ("Captured", "Refunded") and incoming_status in ("Pending", "Failed"):
+        incoming_status = doc.status
+    elif doc.status == "Refunded" and incoming_status == "Captured":
+        incoming_status = "Refunded"
+
+    doc.status = incoming_status
     save_raw(doc, normalized.get("raw"))
-    doc.save(ignore_permissions=True)
+
+
+def update_transaction_from_status(doc, normalized):
+    # Frappe uses optimistic locking (modified timestamp). Tap can hit both the
+    # browser return URL and webhook within milliseconds, while POS reconciliation
+    # may also be polling. Retry against the latest row instead of returning a
+    # TimestampMismatchError to the customer.
+    for attempt in range(3):
+        _apply_normalized_status(doc, normalized)
+        try:
+            doc.save(ignore_permissions=True)
+            break
+        except TimestampMismatchError:
+            if attempt >= 2:
+                raise
+            doc.reload()
 
     if getattr(doc, "pos_payment_allocation", None):
         try:
@@ -221,6 +248,16 @@ def update_transaction_from_status(doc, normalized):
         except Exception:
             frappe.log_error(
                 title=f"Payment Hub POS sync failed: {doc.name}",
+                message=frappe.get_traceback(),
+            )
+
+    if doc.transaction_type == "Refund":
+        try:
+            from erpnext_payment_hub.pos.refund import sync_refund_allocation_from_gateway
+            sync_refund_allocation_from_gateway(doc)
+        except Exception:
+            frappe.log_error(
+                title=f"Payment Hub refund sync failed: {doc.name}",
                 message=frappe.get_traceback(),
             )
     return doc

@@ -26,7 +26,13 @@
     "after_electronic_capture",
     "default_print_format",
     "payment_link_expiry_minutes",
-    "auto_expire_pending_sales"
+    "auto_expire_pending_sales",
+    "refund_security_section",
+    "require_authorization_cash_refund",
+    "require_authorization_electronic_refund",
+    "require_authorization_physical_refund",
+    "allow_refund_method_override",
+    "refund_authorization_minutes"
   ],
   "fields": [
     {
@@ -155,6 +161,42 @@
       "label": "Auto Expire Stale Pending Sales",
       "fieldtype": "Check",
       "default": "1"
+    },
+    {
+      "fieldname": "refund_security_section",
+      "label": "Refund Security",
+      "fieldtype": "Section Break"
+    },
+    {
+      "fieldname": "require_authorization_cash_refund",
+      "label": "Require Manager Authorization for Cash Refund",
+      "fieldtype": "Check",
+      "default": "0"
+    },
+    {
+      "fieldname": "require_authorization_electronic_refund",
+      "label": "Require Manager Authorization for Electronic Refund",
+      "fieldtype": "Check",
+      "default": "1"
+    },
+    {
+      "fieldname": "require_authorization_physical_refund",
+      "label": "Require Manager Authorization for Physical Terminal Refund",
+      "fieldtype": "Check",
+      "default": "1"
+    },
+    {
+      "fieldname": "allow_refund_method_override",
+      "label": "Allow Authorized Refund Method Override",
+      "fieldtype": "Check",
+      "default": "1",
+      "description": "Requires Payment Hub Refund Override role and manager/admin password. v0.5.0 permits override to the configured Cash Mode of Payment only."
+    },
+    {
+      "fieldname": "refund_authorization_minutes",
+      "label": "Refund Authorization Validity (Minutes)",
+      "fieldtype": "Int",
+      "default": "5"
     }
   ],
   "permissions": [

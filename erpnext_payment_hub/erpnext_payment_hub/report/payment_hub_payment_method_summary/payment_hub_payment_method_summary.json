@@ -1,0 +1,30 @@
+{
+  "doctype": "Report",
+  "name": "Payment Hub Payment Method Summary",
+  "module": "ERPNext Payment Hub",
+  "ref_doctype": "Sales Invoice",
+  "report_name": "Payment Hub Payment Method Summary",
+  "report_type": "Script Report",
+  "is_standard": "Yes",
+  "disabled": 0,
+  "roles": [
+    {
+      "role": "System Manager"
+    },
+    {
+      "role": "Accounts Manager"
+    },
+    {
+      "role": "Accounts User"
+    },
+    {
+      "role": "Payment Hub Auditor"
+    },
+    {
+      "role": "Payment Hub Refund Approver"
+    },
+    {
+      "role": "Payment Hub Refund Override"
+    }
+  ]
+}

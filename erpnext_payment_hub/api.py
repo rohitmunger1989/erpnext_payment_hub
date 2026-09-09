@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import frappe
+from frappe.exceptions import TimestampMismatchError
 from frappe.utils import flt
 
 from erpnext_payment_hub.gateway import (
@@ -149,7 +150,13 @@ def refresh_transaction(transaction_name):
 
 
 @frappe.whitelist()
-def refund_transaction(transaction_name, amount, reason=None):
+def refund_transaction(
+    transaction_name,
+    amount,
+    reason=None,
+    reference_doctype=None,
+    reference_name=None,
+):
     original = frappe.get_doc("Gateway Transaction", transaction_name)
 
     if original.transaction_type != "Payment":
@@ -164,8 +171,34 @@ def refund_transaction(transaction_name, amount, reason=None):
     if amount <= 0:
         frappe.throw("Refund amount must be greater than zero.")
 
+    # When a return invoice is supplied, it becomes the idempotency anchor for
+    # this source transaction. Reopening/retrying the same return must never send
+    # a second provider refund.
+    if reference_name:
+        existing = frappe.get_all(
+            "Gateway Transaction",
+            filters={
+                "transaction_type": "Refund",
+                "original_transaction": original.name,
+                "reference_doctype": reference_doctype or original.reference_doctype,
+                "reference_name": reference_name,
+            },
+            fields=["name", "amount", "status", "provider"],
+            order_by="creation asc",
+        )
+        for row in existing:
+            if abs(flt(row.amount, 3) - amount) <= 0.0005:
+                return {
+                    "refund_transaction": row.name,
+                    "original_transaction": original.name,
+                    "provider": row.provider or original.provider,
+                    "status": row.status,
+                    "amount": amount,
+                    "reused": True,
+                }
+
     available = flt(original.amount, 3) - flt(original.refunded_amount, 3)
-    if amount > available:
+    if amount > available + 0.0005:
         frappe.throw(f"Maximum refundable amount is {available:.3f} {original.currency}.")
 
     # CRITICAL: refund through the ORIGINAL provider account, never the current default.
@@ -182,8 +215,8 @@ def refund_transaction(transaction_name, amount, reason=None):
     refund = create_gateway_transaction(
         transaction_type="Refund",
         provider_account=account,
-        reference_doctype=original.reference_doctype,
-        reference_name=original.reference_name,
+        reference_doctype=reference_doctype or original.reference_doctype,
+        reference_name=reference_name or original.reference_name,
         original_transaction=original.name,
         payment_method=original.payment_method,
         amount=amount,
@@ -199,9 +232,19 @@ def refund_transaction(transaction_name, amount, reason=None):
         pos_payment_allocation=getattr(original, "pos_payment_allocation", None),
     )
 
-    # Reserve the amount immediately to block duplicate over-refunds.
-    original.refunded_amount = flt(original.refunded_amount, 3) + amount
-    original.save(ignore_permissions=True)
+    # Reserve the amount immediately to block duplicate over-refunds. The source
+    # payment can also be touched by callbacks/reconciliation, so retry against
+    # the latest row if Frappe optimistic locking detects a concurrent update.
+    for attempt in range(3):
+        try:
+            original.reload()
+            current = flt(original.refunded_amount, 3)
+            original.refunded_amount = flt(current + amount, 3)
+            original.save(ignore_permissions=True)
+            break
+        except TimestampMismatchError:
+            if attempt >= 2:
+                raise
 
     return {
         "refund_transaction": refund.name,
@@ -209,6 +252,7 @@ def refund_transaction(transaction_name, amount, reason=None):
         "provider": original.provider,
         "status": refund.status,
         "amount": amount,
+        "reused": False,
     }
 
 

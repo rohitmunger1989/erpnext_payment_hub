@@ -1,0 +1,280 @@
+{
+  "doctype": "DocType",
+  "name": "POS Refund Allocation",
+  "module": "ERPNext Payment Hub",
+  "autoname": "PRA-.YYYY.-.#####",
+  "title_field": "name",
+  "track_changes": 1,
+  "field_order": [
+    "original_invoice",
+    "return_invoice",
+    "source_section",
+    "source_allocation",
+    "source_gateway_transaction",
+    "channel",
+    "mode_of_payment",
+    "amount",
+    "currency",
+    "provider_section",
+    "provider_account",
+    "provider",
+    "actual_payment_method",
+    "refund_gateway_transaction",
+    "status",
+    "provider_status",
+    "actual_refund_section",
+    "actual_refund_channel",
+    "actual_refund_mode_of_payment",
+    "is_override",
+    "authorization",
+    "authorized_by",
+    "initiated_by",
+    "completed_at",
+    "override_reason",
+    "tracking_section",
+    "idempotency_key",
+    "reason",
+    "error"
+  ],
+  "fields": [
+    {
+      "fieldname": "original_invoice",
+      "label": "Original Sales Invoice",
+      "fieldtype": "Link",
+      "options": "Sales Invoice",
+      "reqd": 1,
+      "in_list_view": 1,
+      "search_index": 1
+    },
+    {
+      "fieldname": "return_invoice",
+      "label": "Return Sales Invoice",
+      "fieldtype": "Link",
+      "options": "Sales Invoice",
+      "reqd": 1,
+      "in_list_view": 1,
+      "search_index": 1
+    },
+    {
+      "fieldname": "source_section",
+      "label": "Original Payment Source",
+      "fieldtype": "Section Break"
+    },
+    {
+      "fieldname": "source_allocation",
+      "label": "Source POS Payment Allocation",
+      "fieldtype": "Link",
+      "options": "POS Payment Allocation",
+      "reqd": 1,
+      "search_index": 1
+    },
+    {
+      "fieldname": "source_gateway_transaction",
+      "label": "Source Gateway Transaction",
+      "fieldtype": "Link",
+      "options": "Gateway Transaction",
+      "search_index": 1
+    },
+    {
+      "fieldname": "channel",
+      "label": "Channel",
+      "fieldtype": "Select",
+      "options": "Cash\nPhysical Payment Terminal\nElectronic Payment",
+      "reqd": 1,
+      "in_list_view": 1
+    },
+    {
+      "fieldname": "mode_of_payment",
+      "label": "Mode of Payment",
+      "fieldtype": "Data"
+    },
+    {
+      "fieldname": "amount",
+      "label": "Refund Amount",
+      "fieldtype": "Currency",
+      "precision": "3",
+      "reqd": 1,
+      "in_list_view": 1
+    },
+    {
+      "fieldname": "currency",
+      "label": "Currency",
+      "fieldtype": "Link",
+      "options": "Currency",
+      "default": "KWD"
+    },
+    {
+      "fieldname": "provider_section",
+      "label": "Refund Provider",
+      "fieldtype": "Section Break"
+    },
+    {
+      "fieldname": "provider_account",
+      "label": "Provider Account",
+      "fieldtype": "Link",
+      "options": "Payment Provider Account"
+    },
+    {
+      "fieldname": "provider",
+      "label": "Provider",
+      "fieldtype": "Data",
+      "read_only": 1
+    },
+    {
+      "fieldname": "actual_payment_method",
+      "label": "Actual Payment Method",
+      "fieldtype": "Data",
+      "read_only": 1
+    },
+    {
+      "fieldname": "refund_gateway_transaction",
+      "label": "Refund Gateway Transaction",
+      "fieldtype": "Link",
+      "options": "Gateway Transaction",
+      "search_index": 1
+    },
+    {
+      "fieldname": "status",
+      "label": "Status",
+      "fieldtype": "Select",
+      "options": "Reserved\nProcessing\nPending\nCompleted\nFailed\nManual Review",
+      "default": "Reserved",
+      "reqd": 1,
+      "in_list_view": 1
+    },
+    {
+      "fieldname": "provider_status",
+      "label": "Provider Status",
+      "fieldtype": "Data",
+      "read_only": 1
+    },
+    {
+      "fieldname": "tracking_section",
+      "label": "Tracking",
+      "fieldtype": "Section Break"
+    },
+    {
+      "fieldname": "idempotency_key",
+      "label": "Idempotency Key",
+      "fieldtype": "Data",
+      "unique": 1,
+      "search_index": 1
+    },
+    {
+      "fieldname": "reason",
+      "label": "Refund Reason",
+      "fieldtype": "Small Text"
+    },
+    {
+      "fieldname": "error",
+      "label": "Last Error / Manual Review Note",
+      "fieldtype": "Small Text",
+      "read_only": 1
+    },
+    {
+      "fieldname": "actual_refund_section",
+      "label": "Actual Refund / Authorization",
+      "fieldtype": "Section Break"
+    },
+    {
+      "fieldname": "actual_refund_channel",
+      "label": "Actual Refund Channel",
+      "fieldtype": "Select",
+      "options": "Cash\nPhysical Payment Terminal\nElectronic Payment",
+      "read_only": 1
+    },
+    {
+      "fieldname": "actual_refund_mode_of_payment",
+      "label": "Actual Refund Mode of Payment",
+      "fieldtype": "Data",
+      "read_only": 1
+    },
+    {
+      "fieldname": "is_override",
+      "label": "Refund Method Override",
+      "fieldtype": "Check",
+      "default": "0",
+      "read_only": 1
+    },
+    {
+      "fieldname": "authorization",
+      "label": "Refund Authorization",
+      "fieldtype": "Link",
+      "options": "Payment Hub Refund Authorization",
+      "read_only": 1,
+      "search_index": 1
+    },
+    {
+      "fieldname": "authorized_by",
+      "label": "Authorized By",
+      "fieldtype": "Link",
+      "options": "User",
+      "read_only": 1
+    },
+    {
+      "fieldname": "initiated_by",
+      "label": "Refund Initiated By",
+      "fieldtype": "Link",
+      "options": "User",
+      "read_only": 1
+    },
+    {
+      "fieldname": "completed_at",
+      "label": "Refund Completed At",
+      "fieldtype": "Datetime",
+      "read_only": 1
+    },
+    {
+      "fieldname": "override_reason",
+      "label": "Refund Override Reason",
+      "fieldtype": "Small Text",
+      "read_only": 1
+    }
+  ],
+  "permissions": [
+    {
+      "role": "System Manager",
+      "read": 1,
+      "write": 1,
+      "create": 1,
+      "delete": 1
+    },
+    {
+      "role": "Accounts Manager",
+      "read": 1,
+      "write": 1,
+      "create": 1,
+      "delete": 0
+    },
+    {
+      "role": "Sales User",
+      "read": 1,
+      "write": 1,
+      "create": 1,
+      "delete": 0
+    },
+    {
+      "role": "Payment Hub Refund Approver",
+      "read": 1,
+      "write": 0,
+      "create": 0,
+      "delete": 0
+    },
+    {
+      "role": "Payment Hub Refund Override",
+      "read": 1,
+      "write": 0,
+      "create": 0,
+      "delete": 0
+    },
+    {
+      "role": "Payment Hub Auditor",
+      "read": 1,
+      "write": 0,
+      "create": 0,
+      "delete": 0
+    }
+  ],
+  "sort_field": "creation",
+  "sort_order": "DESC"
+}

@@ -1,0 +1,251 @@
+{
+  "app": "erpnext_payment_hub",
+  "charts": [],
+  "content": "[{\"id\": \"ph-header\", \"type\": \"header\", \"data\": {\"text\": \"<span class=\\\"h4\\\"><b>Payment Hub</b></span>\", \"col\": 12}}, {\"id\": \"ph-trans\", \"type\": \"card\", \"data\": {\"card_name\": \"Transactions\", \"col\": 4}}, {\"id\": \"ph-reports\", \"type\": \"card\", \"data\": {\"card_name\": \"Reports\", \"col\": 4}}, {\"id\": \"ph-setup\", \"type\": \"card\", \"data\": {\"card_name\": \"Setup\", \"col\": 4}}]",
+  "creation": "2026-09-09 00:00:00.000000",
+  "custom_blocks": [],
+  "docstatus": 0,
+  "doctype": "Workspace",
+  "for_user": "",
+  "hide_custom": 0,
+  "icon": "credit-card",
+  "idx": 0,
+  "is_hidden": 0,
+  "label": "Payment Hub",
+  "links": [
+    {
+      "hidden": 0,
+      "is_query_report": 0,
+      "label": "Transactions",
+      "link_count": 0,
+      "onboard": 0,
+      "type": "Card Break"
+    },
+    {
+      "dependencies": "",
+      "hidden": 0,
+      "is_query_report": 0,
+      "label": "Gateway Transactions",
+      "link_count": 0,
+      "link_to": "Gateway Transaction",
+      "link_type": "DocType",
+      "onboard": 0,
+      "type": "Link"
+    },
+    {
+      "dependencies": "",
+      "hidden": 0,
+      "is_query_report": 0,
+      "label": "POS Payment Sessions",
+      "link_count": 0,
+      "link_to": "POS Payment Session",
+      "link_type": "DocType",
+      "onboard": 0,
+      "type": "Link"
+    },
+    {
+      "dependencies": "",
+      "hidden": 0,
+      "is_query_report": 0,
+      "label": "Payment Allocations",
+      "link_count": 0,
+      "link_to": "POS Payment Allocation",
+      "link_type": "DocType",
+      "onboard": 0,
+      "type": "Link"
+    },
+    {
+      "dependencies": "",
+      "hidden": 0,
+      "is_query_report": 0,
+      "label": "Refund Allocations",
+      "link_count": 0,
+      "link_to": "POS Refund Allocation",
+      "link_type": "DocType",
+      "onboard": 0,
+      "type": "Link"
+    },
+    {
+      "dependencies": "",
+      "hidden": 0,
+      "is_query_report": 0,
+      "label": "Refund Authorizations",
+      "link_count": 0,
+      "link_to": "Payment Hub Refund Authorization",
+      "link_type": "DocType",
+      "onboard": 0,
+      "type": "Link"
+    },
+    {
+      "hidden": 0,
+      "is_query_report": 0,
+      "label": "Reports",
+      "link_count": 0,
+      "onboard": 0,
+      "type": "Card Break"
+    },
+    {
+      "dependencies": "",
+      "hidden": 0,
+      "is_query_report": 1,
+      "label": "Daily Payment & Refund",
+      "link_count": 0,
+      "link_to": "Payment Hub Daily Transactions",
+      "link_type": "Report",
+      "onboard": 0,
+      "type": "Link"
+    },
+    {
+      "dependencies": "",
+      "hidden": 0,
+      "is_query_report": 1,
+      "label": "Transaction History",
+      "link_count": 0,
+      "link_to": "Payment Hub Transaction History",
+      "link_type": "Report",
+      "onboard": 0,
+      "type": "Link"
+    },
+    {
+      "dependencies": "",
+      "hidden": 0,
+      "is_query_report": 1,
+      "label": "Refund Audit",
+      "link_count": 0,
+      "link_to": "Payment Hub Refund Audit",
+      "link_type": "Report",
+      "onboard": 0,
+      "type": "Link"
+    },
+    {
+      "dependencies": "",
+      "hidden": 0,
+      "is_query_report": 1,
+      "label": "Provider Reconciliation",
+      "link_count": 0,
+      "link_to": "Payment Hub Provider Reconciliation",
+      "link_type": "Report",
+      "onboard": 0,
+      "type": "Link"
+    },
+    {
+      "dependencies": "",
+      "hidden": 0,
+      "is_query_report": 1,
+      "label": "Pending / Failed Transactions",
+      "link_count": 0,
+      "link_to": "Payment Hub Pending Failed Transactions",
+      "link_type": "Report",
+      "onboard": 0,
+      "type": "Link"
+    },
+    {
+      "dependencies": "",
+      "hidden": 0,
+      "is_query_report": 1,
+      "label": "Cashier / Branch Summary",
+      "link_count": 0,
+      "link_to": "Payment Hub Cashier Branch Summary",
+      "link_type": "Report",
+      "onboard": 0,
+      "type": "Link"
+    },
+    {
+      "dependencies": "",
+      "hidden": 0,
+      "is_query_report": 1,
+      "label": "Payment Method Summary",
+      "link_count": 0,
+      "link_to": "Payment Hub Payment Method Summary",
+      "link_type": "Report",
+      "onboard": 0,
+      "type": "Link"
+    },
+    {
+      "hidden": 0,
+      "is_query_report": 0,
+      "label": "Setup",
+      "link_count": 0,
+      "onboard": 0,
+      "type": "Card Break"
+    },
+    {
+      "dependencies": "",
+      "hidden": 0,
+      "is_query_report": 0,
+      "label": "Provider Accounts",
+      "link_count": 0,
+      "link_to": "Payment Provider Account",
+      "link_type": "DocType",
+      "onboard": 0,
+      "type": "Link"
+    },
+    {
+      "dependencies": "",
+      "hidden": 0,
+      "is_query_report": 0,
+      "label": "Payment Terminals",
+      "link_count": 0,
+      "link_to": "Payment Terminal",
+      "link_type": "DocType",
+      "onboard": 0,
+      "type": "Link"
+    },
+    {
+      "dependencies": "",
+      "hidden": 0,
+      "is_query_report": 0,
+      "label": "POS Stations",
+      "link_count": 0,
+      "link_to": "POS Station",
+      "link_type": "DocType",
+      "onboard": 0,
+      "type": "Link"
+    },
+    {
+      "dependencies": "",
+      "hidden": 0,
+      "is_query_report": 0,
+      "label": "Payment Hub Settings",
+      "link_count": 0,
+      "link_to": "Payment Hub Settings",
+      "link_type": "DocType",
+      "onboard": 0,
+      "type": "Link"
+    }
+  ],
+  "modified": "2026-09-09 00:00:00.000000",
+  "modified_by": "Administrator",
+  "module": "ERPNext Payment Hub",
+  "name": "Payment Hub",
+  "number_cards": [],
+  "owner": "Administrator",
+  "parent_page": "",
+  "public": 1,
+  "quick_lists": [],
+  "restrict_to_domain": "",
+  "roles": [
+    {
+      "role": "System Manager"
+    },
+    {
+      "role": "Accounts Manager"
+    },
+    {
+      "role": "Accounts User"
+    },
+    {
+      "role": "Payment Hub Auditor"
+    },
+    {
+      "role": "Payment Hub Refund Approver"
+    },
+    {
+      "role": "Payment Hub Refund Override"
+    }
+  ],
+  "sequence_id": 1.0,
+  "shortcuts": [],
+  "title": "Payment Hub",
+  "type": "Workspace"
+}
