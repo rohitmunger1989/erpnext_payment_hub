@@ -1,4 +1,4 @@
-# ERPNext Payment Hub — v0.6.0
+# ERPNext Payment Hub — v0.6.1
 
 Provider-agnostic payment gateway foundation for ERPNext.
 
@@ -931,3 +931,20 @@ These reports use the same Payment Hub transaction/refund audit data as POSNext.
 ### Frappe Payments dependency
 
 `erpnext_payment_hub` does **not** require the separate `payments` app. Tap Payments, MyFatoorah and UPayments continue to use Payment Hub's provider adapters and audit DocTypes. This keeps installation independent while leaving room for optional compatibility adapters later.
+
+
+## v0.6.1 — Desktop Icon Upgrade Fix
+
+v0.6.1 fixes existing-site upgrades where the **Payment Hub** workspace was installed but the Frappe v16 app-screen **Desktop Icon** row was missing. This can happen when Payment Hub was originally installed before the `add_to_apps_screen` hook was introduced.
+
+Payment Hub now runs an idempotent desktop-icon reconciliation from both `after_install` and `after_migrate`. On Frappe v16 it calls Frappe's installed-app icon builder so the Payment Hub icon is created automatically from the app hook. On Frappe v15 the helper is unavailable and is safely skipped.
+
+After upgrading, run:
+
+```bash
+bench --site YOUR_SITE migrate
+bench --site YOUR_SITE clear-cache
+bench restart
+```
+
+No manual Bench Console command is required. The icon remains permission-gated by `erpnext_payment_hub.permissions.check_app_permission`.

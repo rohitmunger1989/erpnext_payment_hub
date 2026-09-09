@@ -69,13 +69,34 @@ def ensure_provider_accounts():
             doc.insert(ignore_permissions=True)
 
 
+def ensure_desktop_icon():
+    """Create missing Frappe v16 app-screen icons after upgrades.
+
+    Frappe normally seeds Desktop Icon rows during a fresh app install. Existing
+    sites upgraded from Payment Hub releases that predate ``add_to_apps_screen``
+    can therefore have the workspace but no app icon. On Frappe versions that
+    provide the v16 Desktop Icon helpers, re-scan installed apps idempotently.
+    Frappe v15 does not provide this API, so simply skip it there.
+    """
+    try:
+        from frappe.desk.doctype.desktop_icon.desktop_icon import (
+            create_desktop_icons_from_installed_apps,
+        )
+    except (ImportError, ModuleNotFoundError):
+        return
+
+    create_desktop_icons_from_installed_apps()
+
+
 def after_install():
     ensure_refund_roles()
     ensure_settings_defaults()
     ensure_provider_accounts()
+    ensure_desktop_icon()
 
 
 def after_migrate():
     """Idempotent post-migration setup for existing installations."""
     ensure_refund_roles()
     ensure_settings_defaults()
+    ensure_desktop_icon()
