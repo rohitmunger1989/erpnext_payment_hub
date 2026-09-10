@@ -25,7 +25,12 @@
     "async_electronic_payment",
     "after_electronic_capture",
     "default_print_format",
+    "draft_a4_print_format",
+    "draft_receipt_print_format",
+    "final_receipt_print_format",
+    "default_draft_print_type",
     "payment_link_expiry_minutes",
+    "pending_sale_retention_hours",
     "auto_expire_pending_sales",
     "refund_security_section",
     "require_authorization_cash_refund",
@@ -122,9 +127,17 @@
     },
     {
       "fieldname": "payment_link_expiry_minutes",
-      "label": "Payment Link / Pending Sale Expiry (Minutes)",
+      "label": "Gateway Payment Link Expiry (Minutes)",
       "fieldtype": "Int",
-      "default": "30"
+      "default": "30",
+      "description": "Local expected lifetime of one gateway payment attempt. Provider limits still apply; a failed/expired attempt can be replaced with a new link while the POS sale remains recoverable."
+    },
+    {
+      "fieldname": "pending_sale_retention_hours",
+      "label": "Pending Sale Retention (Hours)",
+      "fieldtype": "Int",
+      "default": "24",
+      "description": "How long an unpaid/failed POS Payment Session remains recoverable for a new payment attempt or draft printing. Captured money is never auto-expired."
     },
     {
       "fieldname": "whatsapp_account_name",
@@ -155,6 +168,34 @@
       "label": "Default POS Print Format",
       "fieldtype": "Data",
       "default": "Standard"
+    },
+    {
+      "fieldname": "draft_a4_print_format",
+      "label": "Draft A4 Print Format",
+      "fieldtype": "Link",
+      "options": "Print Format",
+      "description": "A4 print format used by Payment Hub for unpaid or partially paid draft invoices. Leave blank to fall back to Default POS Print Format."
+    },
+    {
+      "fieldname": "draft_receipt_print_format",
+      "label": "Draft Receipt Print Format",
+      "fieldtype": "Link",
+      "options": "Print Format",
+      "description": "Thermal/receipt print format used by Payment Hub for unpaid or partially paid draft invoices. Leave blank to fall back to Default POS Print Format."
+    },
+    {
+      "fieldname": "final_receipt_print_format",
+      "label": "Final Receipt Print Format",
+      "fieldtype": "Link",
+      "options": "Print Format",
+      "description": "Preferred receipt print format after a Payment Hub sale is completed. POS adapters may continue to use their own final receipt setting when configured."
+    },
+    {
+      "fieldname": "default_draft_print_type",
+      "label": "Default Draft Print Type",
+      "fieldtype": "Select",
+      "options": "Receipt\nA4\nAsk Each Time",
+      "default": "Receipt"
     },
     {
       "fieldname": "auto_expire_pending_sales",

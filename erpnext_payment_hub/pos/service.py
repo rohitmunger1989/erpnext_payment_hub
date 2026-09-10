@@ -5,7 +5,7 @@ import uuid
 
 import frappe
 from frappe.exceptions import TimestampMismatchError
-from frappe.utils import add_to_date, flt, now_datetime
+from frappe.utils import add_to_date, flt, get_datetime, now_datetime
 
 from erpnext_payment_hub.gateway import (
     _normalize_kuwait_phone,
@@ -20,6 +20,25 @@ OPEN_ALLOCATION_STATUSES = ("Draft", "Waiting", "Captured")
 PENDING_SESSION_STATUSES = ("Payment Pending", "Partially Paid")
 PAID_PENDING_SESSION_STATUSES = ("Paid", "Ready to Complete")
 FAILED_SESSION_STATUSES = ("Failed", "Expired", "Cancelled")
+
+
+def get_session_recover_until(session):
+    """Return the recovery deadline for an unpaid POS session.
+
+    New sessions persist the deadline. Older sessions fall back to their creation
+    time plus the configured retention window so upgrades remain backward compatible.
+    Captured money is handled separately and is never made inaccessible by this timer.
+    """
+    value = getattr(session, "recover_until", None)
+    if value:
+        return get_datetime(value)
+    settings = get_settings()
+    hours = max(1, int(getattr(settings, "pending_sale_retention_hours", 24) or 24))
+    return add_to_date(get_datetime(session.creation or now_datetime()), hours=hours)
+
+
+def session_recovery_expired(session):
+    return bool(get_session_recover_until(session) <= now_datetime())
 
 
 def as_json(value):
@@ -96,21 +115,26 @@ def recalculate_session(session_or_name, *, publish=True):
             session.last_status_check = now_datetime()
 
             terminal_statuses = [r.status for r in rows]
+            recovery_expired = session_recovery_expired(session)
             if confirmed >= total and total > 0:
                 session.status = "Ready to Complete"
                 if not session.paid_at:
                     session.paid_at = now_datetime()
             elif confirmed > 0:
+                # Captured money must remain recoverable even after the nominal
+                # unpaid-session retention window.
                 session.status = "Partially Paid"
             elif pending > 0:
                 session.status = "Payment Pending"
+            elif recovery_expired:
+                session.status = "Expired"
             elif terminal_statuses and all(x in ("Failed", "Cancelled", "Expired") for x in terminal_statuses):
-                if any(x == "Failed" for x in terminal_statuses):
-                    session.status = "Failed"
-                elif any(x == "Expired" for x in terminal_statuses):
-                    session.status = "Expired"
-                else:
+                if all(x == "Cancelled" for x in terminal_statuses):
                     session.status = "Cancelled"
+                else:
+                    # A failed/expired gateway attempt does not expire the whole
+                    # sale. Keep it recoverable so a fresh link can be created.
+                    session.status = "Failed"
             elif session.status not in ("Failed", "Expired", "Cancelled"):
                 session.status = "Draft"
 
@@ -350,19 +374,36 @@ def expire_stale_pos_payments(limit=100):
     settings = get_settings()
     if not bool(getattr(settings, "auto_expire_pending_sales", 1)):
         return
-    minutes = int(getattr(settings, "payment_link_expiry_minutes", 30) or 30)
-    cutoff = add_to_date(now_datetime(), minutes=-minutes)
-    names = frappe.get_all(
+    minutes = max(1, int(getattr(settings, "payment_link_expiry_minutes", 30) or 30))
+    now = now_datetime()
+    cutoff = add_to_date(now, minutes=-minutes)
+
+    # New allocations carry an explicit provider-link deadline. Legacy rows use
+    # creation + the configured link lifetime.
+    explicit = frappe.get_all(
         "POS Payment Allocation",
         filters={
             "status": "Waiting",
             "channel": "Electronic Payment",
+            "expires_at": ["<=", now],
+        },
+        pluck="name",
+        order_by="creation asc",
+        limit=int(limit or 100),
+    )
+    legacy = frappe.get_all(
+        "POS Payment Allocation",
+        filters={
+            "status": "Waiting",
+            "channel": "Electronic Payment",
+            "expires_at": ["is", "not set"],
             "creation": ["<", cutoff],
         },
         pluck="name",
         order_by="creation asc",
         limit=int(limit or 100),
     )
+    names = list(dict.fromkeys([*explicit, *legacy]))[: int(limit or 100)]
     for name in names:
         try:
             allocation = frappe.get_doc("POS Payment Allocation", name)
@@ -380,5 +421,57 @@ def expire_stale_pos_payments(limit=100):
         except Exception:
             frappe.log_error(
                 title=f"Payment Hub POS expiry failed: {name}",
+                message=frappe.get_traceback(),
+            )
+
+
+
+def expire_stale_pos_sessions(limit=100):
+    """Expire unpaid sessions only after the recovery window.
+
+    Sessions containing captured money are intentionally excluded so a cashier can
+    always recover/finalize or refund money that was actually collected.
+    """
+    settings = get_settings()
+    hours = max(1, int(getattr(settings, "pending_sale_retention_hours", 24) or 24))
+    now = now_datetime()
+    legacy_cutoff = add_to_date(now, hours=-hours)
+
+    explicit = frappe.get_all(
+        "POS Payment Session",
+        filters={
+            "finalized": 0,
+            "confirmed_paid_amount": ["<=", 0],
+            "recover_until": ["<=", now],
+            "status": ["not in", ["Completed", "Cancelled", "Expired"]],
+        },
+        pluck="name",
+        order_by="creation asc",
+        limit=int(limit or 100),
+    )
+    legacy = frappe.get_all(
+        "POS Payment Session",
+        filters={
+            "finalized": 0,
+            "confirmed_paid_amount": ["<=", 0],
+            "recover_until": ["is", "not set"],
+            "creation": ["<", legacy_cutoff],
+            "status": ["not in", ["Completed", "Cancelled", "Expired"]],
+        },
+        pluck="name",
+        order_by="creation asc",
+        limit=int(limit or 100),
+    )
+
+    for name in list(dict.fromkeys([*explicit, *legacy]))[: int(limit or 100)]:
+        try:
+            session = frappe.get_doc("POS Payment Session", name)
+            session.status = "Expired"
+            session.last_error = "Pending sale recovery window expired."
+            session.save(ignore_permissions=True)
+            _publish_session(session)
+        except Exception:
+            frappe.log_error(
+                title=f"Payment Hub POS session expiry failed: {name}",
                 message=frappe.get_traceback(),
             )

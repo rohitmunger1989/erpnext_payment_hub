@@ -5,6 +5,8 @@ from collections import defaultdict
 import frappe
 from frappe.utils import add_days, flt, getdate, nowdate
 
+from erpnext_payment_hub.pos.scope import effective_pos_profile, validate_shift_scope
+
 
 ACTIVE_REFUND_STATUSES = ("Reserved", "Processing", "Pending", "Completed", "Manual Review")
 
@@ -109,6 +111,7 @@ def _invoice_payment_rows(
     from_date=None,
     to_date=None,
     pos_profile=None,
+    pos_opening_shift=None,
     cashier=None,
     search=None,
     limit=1000,
@@ -124,6 +127,10 @@ def _invoice_payment_rows(
     if pos_profile:
         conditions.append("si.pos_profile = %(pos_profile)s")
         params["pos_profile"] = pos_profile
+    has_shift_field = frappe.db.has_column("Sales Invoice", "posa_pos_opening_shift")
+    if pos_opening_shift and has_shift_field:
+        conditions.append("si.posa_pos_opening_shift = %(pos_opening_shift)s")
+        params["pos_opening_shift"] = pos_opening_shift
     if cashier:
         conditions.append("si.owner = %(cashier)s")
         params["cashier"] = cashier
@@ -162,6 +169,7 @@ def _invoice_payment_rows(
             si.customer_name,
             si.contact_mobile AS mobile_number,
             si.pos_profile,
+            {"si.posa_pos_opening_shift" if has_shift_field else "NULL"} AS pos_opening_shift,
             si.currency,
             si.grand_total,
             sip.mode_of_payment,
@@ -194,7 +202,8 @@ def _prefetch_payment_hub(invoice_names):
         filters={"invoice_name": ["in", invoice_names]},
         fields=[
             "name", "invoice_name", "customer", "customer_name", "mobile_number", "currency",
-            "pos_profile", "pos_station", "owner", "status", "grand_total", "creation",
+            "pos_profile", "pos_station", "pos_opening_shift", "business_date",
+            "owner", "status", "grand_total", "creation",
         ],
     )
     for row in session_rows:
@@ -346,6 +355,8 @@ def _make_rows(invoice_payment_rows):
                     "mobile_number": meta.mobile_number,
                     "pos_profile": meta.pos_profile,
                     "pos_station": None,
+                    "pos_opening_shift": meta.pos_opening_shift,
+                    "business_date": meta.posting_date,
                     "cashier_user": refund.initiated_by or meta.cashier_user,
                     "authorized_by": refund.authorized_by or (auth.authorized_by if auth else None),
                     "channel": actual_channel,
@@ -393,6 +404,8 @@ def _make_rows(invoice_payment_rows):
                     "mobile_number": session.mobile_number or meta.mobile_number,
                     "pos_profile": session.pos_profile or meta.pos_profile,
                     "pos_station": session.pos_station,
+                    "pos_opening_shift": session.pos_opening_shift or meta.pos_opening_shift,
+                    "business_date": session.business_date or meta.posting_date,
                     "cashier_user": session.owner or meta.cashier_user,
                     "authorized_by": None,
                     "channel": allocation.channel,
@@ -435,6 +448,8 @@ def _make_rows(invoice_payment_rows):
                 "mobile_number": meta.mobile_number,
                 "pos_profile": meta.pos_profile,
                 "pos_station": None,
+                "pos_opening_shift": meta.pos_opening_shift,
+                "business_date": meta.posting_date,
                 "cashier_user": meta.cashier_user,
                 "authorized_by": None,
                 "channel": channel,
@@ -468,10 +483,22 @@ def _make_rows(invoice_payment_rows):
     return result
 
 
-def _pending_session_rows(*, pos_profile=None, search=None, limit=100):
-    filters = {"invoice_name": ["is", "not set"], "status": ["not in", ["Completed", "Cancelled"]]}
+def _pending_session_rows(
+    *, pos_profile=None, pos_opening_shift=None, from_date=None, to_date=None, search=None, limit=100
+):
+    # Draft invoices created by preflight are still pending transactions until
+    # submitted, so do not require invoice_name to be empty here.
+    filters = {"status": ["not in", ["Completed", "Cancelled"]]}
     if pos_profile:
         filters["pos_profile"] = pos_profile
+    if pos_opening_shift:
+        filters["pos_opening_shift"] = pos_opening_shift
+    elif from_date and to_date:
+        filters["business_date"] = ["between", [from_date, to_date]]
+    elif from_date:
+        filters["business_date"] = [">=", from_date]
+    elif to_date:
+        filters["business_date"] = ["<=", to_date]
     or_filters = None
     if search:
         term = f"%{search}%"
@@ -489,7 +516,7 @@ def _pending_session_rows(*, pos_profile=None, search=None, limit=100):
         fields=[
             "name", "status", "customer", "customer_name", "mobile_number", "currency",
             "grand_total", "confirmed_paid_amount", "pending_amount", "pos_profile", "pos_station",
-            "owner", "creation",
+            "pos_opening_shift", "business_date", "owner", "creation",
         ],
         order_by="creation desc",
         limit=max(1, min(int(limit or 100), 500)),
@@ -539,6 +566,8 @@ def _pending_session_rows(*, pos_profile=None, search=None, limit=100):
                 "mobile_number": session.mobile_number,
                 "pos_profile": session.pos_profile,
                 "pos_station": session.pos_station,
+                "pos_opening_shift": session.pos_opening_shift,
+                "business_date": session.business_date,
                 "cashier_user": session.owner,
                 "authorized_by": None,
                 "channel": allocation.channel,
@@ -567,6 +596,7 @@ def transaction_history(
     from_date=None,
     to_date=None,
     pos_profile=None,
+    pos_opening_shift=None,
     cashier=None,
     transaction_type=None,
     channel=None,
@@ -577,19 +607,29 @@ def transaction_history(
 ):
     _require_transaction_read()
     safe_limit = max(1, min(int(limit or 100), 5000))
-    if not search and not from_date:
+    if not search and not from_date and not pos_opening_shift:
         from_date = add_days(nowdate(), -30)
     invoice_rows = _invoice_payment_rows(
         from_date=from_date,
         to_date=to_date,
         pos_profile=pos_profile,
+        pos_opening_shift=pos_opening_shift,
         cashier=cashier,
         search=search,
         limit=max(safe_limit * 5, 200),
     )
     rows = _make_rows(invoice_rows)
     if include_pending:
-        rows.extend(_pending_session_rows(pos_profile=pos_profile, search=search, limit=safe_limit))
+        rows.extend(
+            _pending_session_rows(
+                pos_profile=pos_profile,
+                pos_opening_shift=pos_opening_shift,
+                from_date=from_date,
+                to_date=to_date,
+                search=search,
+                limit=safe_limit,
+            )
+        )
 
     def keep(row):
         if transaction_type and row.get("transaction_type") != transaction_type:
@@ -625,6 +665,8 @@ def search_transaction_history(
     from_date=None,
     to_date=None,
     pos_profile=None,
+    pos_opening_shift=None,
+    current_pos_profile=None,
     cashier=None,
     transaction_type=None,
     channel=None,
@@ -632,11 +674,14 @@ def search_transaction_history(
     status=None,
     limit=100,
 ):
+    pos_profile = effective_pos_profile(pos_profile, current_pos_profile)
+    validate_shift_scope(pos_opening_shift=pos_opening_shift, pos_profile=pos_profile)
     rows = transaction_history(
         search=search,
         from_date=from_date,
         to_date=to_date,
         pos_profile=pos_profile,
+        pos_opening_shift=pos_opening_shift,
         cashier=cashier,
         transaction_type=transaction_type,
         channel=channel,
@@ -653,6 +698,7 @@ def daily_report_data(
     from_date=None,
     to_date=None,
     pos_profile=None,
+    pos_opening_shift=None,
     cashier=None,
     transaction_type=None,
     channel=None,
@@ -662,13 +708,15 @@ def daily_report_data(
     limit=5000,
 ):
     _require_transaction_read()
-    from_date = from_date or nowdate()
-    to_date = to_date or from_date
+    if not pos_opening_shift:
+        from_date = from_date or nowdate()
+        to_date = to_date or from_date
     rows = transaction_history(
         search=search,
         from_date=from_date,
         to_date=to_date,
         pos_profile=pos_profile,
+        pos_opening_shift=pos_opening_shift,
         cashier=cashier,
         transaction_type=transaction_type,
         channel=channel,
@@ -695,9 +743,13 @@ def daily_report_data(
             result.append({"name": key, "payments": payments, "refunds": refunds, "net": flt(payments - refunds, 3)})
         return result
 
+    row_dates = [str(row.get("posting_date") or row.get("business_date")) for row in rows if row.get("posting_date") or row.get("business_date")]
+    display_from = str(getdate(from_date)) if from_date else (min(row_dates) if row_dates else nowdate())
+    display_to = str(getdate(to_date)) if to_date else (max(row_dates) if row_dates else display_from)
+
     return {
-        "from_date": str(getdate(from_date)),
-        "to_date": str(getdate(to_date)),
+        "from_date": display_from,
+        "to_date": display_to,
         "currency": rows[0]["currency"] if rows else "KWD",
         "payment_total": payment_total,
         "refund_total": refund_total,
@@ -714,6 +766,8 @@ def get_daily_transaction_report(
     from_date=None,
     to_date=None,
     pos_profile=None,
+    pos_opening_shift=None,
+    current_pos_profile=None,
     cashier=None,
     transaction_type=None,
     channel=None,
@@ -721,10 +775,13 @@ def get_daily_transaction_report(
     status=None,
     search=None,
 ):
+    pos_profile = effective_pos_profile(pos_profile, current_pos_profile)
+    validate_shift_scope(pos_opening_shift=pos_opening_shift, pos_profile=pos_profile)
     return daily_report_data(
         from_date=from_date,
         to_date=to_date,
         pos_profile=pos_profile,
+        pos_opening_shift=pos_opening_shift,
         cashier=cashier,
         transaction_type=transaction_type,
         channel=channel,
@@ -754,7 +811,9 @@ def _export_invoice(row):
     return row.get("return_invoice") or row.get("invoice") or row.get("session") or ""
 
 
-def _export_filters_text(*, view, search=None, from_date=None, to_date=None, pos_profile=None):
+def _export_filters_text(
+    *, view, search=None, from_date=None, to_date=None, pos_profile=None, pos_opening_shift=None
+):
     parts = []
     if view == "daily":
         parts.append(f"Period: {from_date or nowdate()} to {to_date or from_date or nowdate()}")
@@ -764,6 +823,8 @@ def _export_filters_text(*, view, search=None, from_date=None, to_date=None, pos
         parts.append("Period: last 30 days")
     if pos_profile:
         parts.append(f"POS Profile: {pos_profile}")
+    if pos_opening_shift:
+        parts.append(f"POS Shift: {pos_opening_shift}")
     return " | ".join(parts)
 
 
@@ -819,13 +880,18 @@ def _export_detail_row(row):
     ]
 
 
-def _build_export_xlsx(*, view, rows, report=None, search=None, from_date=None, to_date=None, pos_profile=None):
+def _build_export_xlsx(
+    *, view, rows, report=None, search=None, from_date=None, to_date=None, pos_profile=None, pos_opening_shift=None
+):
     from frappe.utils.xlsxutils import make_xlsx
 
     title = "Payment Hub Daily Payment & Refund Report" if view == "daily" else "Payment Hub Transaction History"
     data = [
         [title],
-        [_export_filters_text(view=view, search=search, from_date=from_date, to_date=to_date, pos_profile=pos_profile)],
+        [_export_filters_text(
+            view=view, search=search, from_date=from_date, to_date=to_date,
+            pos_profile=pos_profile, pos_opening_shift=pos_opening_shift
+        )],
         [],
     ]
 
@@ -874,9 +940,14 @@ def _amount_html(row):
     return f"{flt(amount, 3):,.3f} {_html(row.get('currency') or 'KWD')}"
 
 
-def _build_export_pdf_html(*, view, rows, report=None, search=None, from_date=None, to_date=None, pos_profile=None):
+def _build_export_pdf_html(
+    *, view, rows, report=None, search=None, from_date=None, to_date=None, pos_profile=None, pos_opening_shift=None
+):
     title = "Payment Hub Daily Payment & Refund Report" if view == "daily" else "Payment Hub Transaction History"
-    filter_text = _export_filters_text(view=view, search=search, from_date=from_date, to_date=to_date, pos_profile=pos_profile)
+    filter_text = _export_filters_text(
+        view=view, search=search, from_date=from_date, to_date=to_date,
+        pos_profile=pos_profile, pos_opening_shift=pos_opening_shift
+    )
 
     summary_html = ""
     if view == "daily" and report:
@@ -1000,6 +1071,8 @@ def download_transaction_export(
     from_date=None,
     to_date=None,
     pos_profile=None,
+    pos_opening_shift=None,
+    current_pos_profile=None,
 ):
     """Download POS Payment Hub history/daily report as Excel or PDF."""
     _require_transaction_read()
@@ -1010,12 +1083,16 @@ def download_transaction_export(
     if file_format not in {"xlsx", "excel", "pdf"}:
         frappe.throw("Export format must be Excel or PDF.")
 
+    pos_profile = effective_pos_profile(pos_profile, current_pos_profile)
+    validate_shift_scope(pos_opening_shift=pos_opening_shift, pos_profile=pos_profile)
+
     report = None
     if view == "daily":
         report = daily_report_data(
             from_date=from_date,
             to_date=to_date,
             pos_profile=pos_profile,
+            pos_opening_shift=pos_opening_shift,
             limit=5000,
         )
         rows = report["rows"]
@@ -1028,6 +1105,7 @@ def download_transaction_export(
             from_date=from_date,
             to_date=to_date,
             pos_profile=pos_profile,
+            pos_opening_shift=pos_opening_shift,
             include_pending=True,
             limit=5000,
         )
@@ -1043,6 +1121,7 @@ def download_transaction_export(
             from_date=from_date,
             to_date=to_date,
             pos_profile=pos_profile,
+            pos_opening_shift=pos_opening_shift,
         )
         frappe.local.response.type = "binary"
         return
@@ -1057,6 +1136,7 @@ def download_transaction_export(
         from_date=from_date,
         to_date=to_date,
         pos_profile=pos_profile,
+        pos_opening_shift=pos_opening_shift,
     )
     frappe.local.response.filename = f"{base_name}.pdf"
     frappe.local.response.filecontent = get_pdf(

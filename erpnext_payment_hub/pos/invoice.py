@@ -83,6 +83,27 @@ def _validate_total(doc, session):
         )
 
 
+
+def resolve_draft_print_format(print_format=None, print_type=None):
+    """Resolve A4/receipt draft printing without hardcoding a site print format."""
+    settings = get_settings()
+    requested = str(print_type or getattr(settings, "default_draft_print_type", None) or "Receipt").strip()
+    if requested not in {"Receipt", "A4", "Ask Each Time"}:
+        requested = "Receipt"
+    if requested == "Ask Each Time":
+        requested = "Receipt"
+
+    if print_format:
+        return print_format, requested
+
+    if requested == "A4":
+        resolved = getattr(settings, "draft_a4_print_format", None)
+    else:
+        resolved = getattr(settings, "draft_receipt_print_format", None)
+
+    resolved = resolved or getattr(settings, "default_print_format", None) or "Standard"
+    return resolved, requested
+
 def build_print_result(doc, print_format=None):
     settings = get_settings()
     print_format = print_format or getattr(settings, "default_print_format", None) or "Standard"
@@ -101,6 +122,65 @@ def build_print_result(doc, print_format=None):
     }
 
 
+def _invoice_claimed_by_other_session(session, invoice_doctype, invoice_name):
+    """Return another POS Payment Session that already owns this invoice.
+
+    A Sales Invoice draft is part of a single payment session.  Reusing the same
+    draft from another cart can attach the wrong captured payment to the invoice.
+    """
+    if not invoice_name:
+        return None
+    filters = {
+        "invoice_doctype": invoice_doctype,
+        "invoice_name": invoice_name,
+        "name": ["!=", session.name],
+    }
+    rows = frappe.get_all(
+        "POS Payment Session",
+        filters=filters,
+        fields=["name", "status", "finalized", "grand_total", "cart_reference"],
+        order_by="finalized desc, modified desc",
+        limit=1,
+    )
+    return frappe._dict(rows[0]) if rows else None
+
+
+def _assert_invoice_not_claimed_elsewhere(session, invoice_doctype, invoice_name):
+    other = _invoice_claimed_by_other_session(session, invoice_doctype, invoice_name)
+    if not other:
+        return
+    frappe.throw(
+        f"{invoice_doctype} {invoice_name} is already linked to POS Payment Session "
+        f"{other.name}. This session cannot reuse another cart's invoice. "
+        "Create a fresh draft for this payment session."
+    )
+
+
+def _new_invoice_payload(payload, invoice_doctype):
+    """Return a payload that is guaranteed to create a fresh draft.
+
+    POS frontends may keep a stale ``name`` from an earlier draft in their cart
+    state.  The invoice identity is owned by POS Payment Session, never by an
+    untrusted/new-cart payload.  Once a session has ``invoice_name`` we reuse that
+    explicit draft through ``invoice_name`` instead.
+    """
+    clean = dict(payload)
+    clean["doctype"] = invoice_doctype
+    for fieldname in (
+        "name",
+        "docstatus",
+        "owner",
+        "creation",
+        "modified",
+        "modified_by",
+        "idx",
+        "__islocal",
+        "__unsaved",
+    ):
+        clean.pop(fieldname, None)
+    return clean
+
+
 def create_or_update_invoice(
     session,
     *,
@@ -113,6 +193,7 @@ def create_or_update_invoice(
     if invoice_name:
         if not frappe.db.exists(invoice_doctype, invoice_name):
             frappe.throw(f"{invoice_doctype} {invoice_name} does not exist.")
+        _assert_invoice_not_claimed_elsewhere(session, invoice_doctype, invoice_name)
         doc = frappe.get_doc(invoice_doctype, invoice_name)
     else:
         payload = _extract_invoice_payload(invoice_payload or session.draft_payload)
@@ -121,8 +202,9 @@ def create_or_update_invoice(
                 "No invoice payload is saved on this POS Payment Session. "
                 "The POS adapter must save the cart/draft payload or pass invoice_payload."
             )
-        payload = dict(payload)
-        payload.setdefault("doctype", invoice_doctype)
+        # Never trust a new-cart payload to choose an existing invoice name.
+        # The only supported reuse path is session.invoice_name / invoice_name.
+        payload = _new_invoice_payload(payload, invoice_doctype)
         doc = frappe.get_doc(payload)
 
     if doc.docstatus == 2:

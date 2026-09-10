@@ -11,6 +11,13 @@ from erpnext_payment_hub.gateway import (
     touch_pos_station,
     update_transaction_from_status,
 )
+from erpnext_payment_hub.pos.scope import (
+    apply_session_shift_context,
+    build_scope_context,
+    effective_pos_profile,
+    validate_shift_scope,
+)
+
 from erpnext_payment_hub.pos.service import (
     FAILED_SESSION_STATUSES,
     PAID_PENDING_SESSION_STATUSES,
@@ -42,6 +49,9 @@ def _session_response(session):
         "pos_system": session.pos_system,
         "pos_profile": session.pos_profile,
         "pos_station": session.pos_station,
+        "pos_opening_shift": getattr(session, "pos_opening_shift", None),
+        "business_date": getattr(session, "business_date", None),
+        "cashier_user": session.owner,
         "customer": session.customer,
         "customer_name": session.customer_name,
         "mobile_number": session.mobile_number,
@@ -54,6 +64,8 @@ def _session_response(session):
         "invoice_name": session.invoice_name,
         "finalized": bool(session.finalized),
         "draft_saved_at": session.draft_saved_at,
+        "recover_until": getattr(session, "recover_until", None),
+        "preflight_validated_at": getattr(session, "preflight_validated_at", None),
         "last_error": session.last_error,
         "completed_at": session.completed_at,
         "completed_by": session.completed_by,
@@ -133,6 +145,12 @@ def get_pos_payment_config(computer_name=None, pos_profile=None, branch=None):
         "whatsapp_integration": getattr(settings, "whatsapp_integration", None) or "Frappe WhatsApp",
         "async_electronic_payment": bool(getattr(settings, "async_electronic_payment", 1)),
         "after_electronic_capture": getattr(settings, "after_electronic_capture", None) or "Mark Paid Only",
+        "payment_link_expiry_minutes": int(getattr(settings, "payment_link_expiry_minutes", 30) or 30),
+        "pending_sale_retention_hours": int(getattr(settings, "pending_sale_retention_hours", 24) or 24),
+        "draft_a4_print_format": getattr(settings, "draft_a4_print_format", None),
+        "draft_receipt_print_format": getattr(settings, "draft_receipt_print_format", None),
+        "final_receipt_print_format": getattr(settings, "final_receipt_print_format", None),
+        "default_draft_print_type": getattr(settings, "default_draft_print_type", None) or "Receipt",
         "station": station.name if station else None,
         "computer_name": station.computer_name if station else computer_name,
         "terminal": getattr(terminal, "name", None) if terminal else None,
@@ -156,6 +174,7 @@ def create_pos_session(
     warehouse=None,
     computer_name=None,
     pos_station=None,
+    pos_opening_shift=None,
     cart_reference=None,
     idempotency_key=None,
     draft_payload=None,
@@ -203,6 +222,10 @@ def create_pos_session(
     doc.cart_reference = cart_reference
     doc.idempotency_key = idempotency_key or make_idempotency("SESSION", pos_system or "API")
     doc.draft_payload = as_json(draft_payload)
+    apply_session_shift_context(doc, pos_opening_shift=pos_opening_shift, draft_payload=draft_payload)
+    settings = get_settings()
+    retention_hours = max(1, int(getattr(settings, "pending_sale_retention_hours", 24) or 24))
+    doc.recover_until = add_to_date(now_datetime(), hours=retention_hours)
     doc.insert(ignore_permissions=True)
     recalculate_session(doc, publish=False)
     return _session_response(doc)
@@ -213,11 +236,60 @@ def save_pos_draft(session_name, draft_payload, cart_reference=None):
     session = frappe.get_doc("POS Payment Session", session_name)
     assert_open_session(session)
     session.draft_payload = as_json(draft_payload)
+    apply_session_shift_context(session, draft_payload=draft_payload)
     session.draft_saved_at = now_datetime()
     if cart_reference is not None:
         session.cart_reference = cart_reference
     session.save(ignore_permissions=True)
     return _session_response(session)
+
+
+@frappe.whitelist()
+def prepare_pos_invoice(session_name, invoice_payload=None, invoice_doctype="Sales Invoice", print_format=None):
+    """Create/save the exact POS draft before any electronic money is requested.
+
+    Saving the draft executes the site's normal Sales Invoice validation hooks
+    (ERPNext plus any installed POS-specific/company controls). Payment Hub does
+    not hardcode tax, negative-stock or selling-rate policy here.
+    """
+    session = frappe.get_doc("POS Payment Session", session_name)
+    assert_open_session(session)
+
+    from erpnext_payment_hub.pos.invoice import create_or_update_invoice
+
+    try:
+        doc, invoice_result = create_or_update_invoice(
+            session,
+            invoice_doctype=session.invoice_doctype or invoice_doctype or "Sales Invoice",
+            invoice_name=session.invoice_name,
+            invoice_payload=invoice_payload,
+            submit=False,
+            print_format=print_format,
+        )
+    except Exception as exc:
+        # Preserve a cashier-friendly recovery note. The original exception is
+        # re-raised so POSNext/POS Awesome still show the site's native validation.
+        session.last_error = str(exc)[:2000]
+        session.save(ignore_permissions=True)
+        raise
+
+    session.invoice_doctype = doc.doctype
+    session.invoice_name = doc.name
+    apply_session_shift_context(
+        session,
+        pos_opening_shift=doc.get("posa_pos_opening_shift") if hasattr(doc, "get") else None,
+        draft_payload=invoice_payload or session.draft_payload,
+    )
+    session.draft_saved_at = session.draft_saved_at or now_datetime()
+    session.preflight_validated_at = now_datetime()
+    session.last_error = None
+    session.save(ignore_permissions=True)
+
+    return {
+        "session": _session_response(session),
+        "invoice": invoice_result,
+        "preflight_validated": True,
+    }
 
 
 @frappe.whitelist()
@@ -329,16 +401,18 @@ def create_payment_link(
         allocation.payment_url = txn.payment_url
         allocation.actual_payment_method = txn.provider_payment_type
         allocation.status = "Captured" if txn.status == "Captured" else "Waiting"
-        expiry_minutes = int(getattr(settings, "payment_link_expiry_minutes", 30) or 30)
+        expiry_minutes = max(1, int(getattr(settings, "payment_link_expiry_minutes", 30) or 30))
         allocation.expires_at = add_to_date(now_datetime(), minutes=expiry_minutes)
         if allocation.status == "Captured":
             allocation.captured_at = now_datetime()
         allocation.save(ignore_permissions=True)
         recalculate_session(session)
-    except Exception:
+    except Exception as exc:
         allocation.status = "Failed"
-        allocation.failed_reason = frappe.get_traceback()[-2000:]
+        allocation.failed_reason = str(exc)[:2000] or frappe.get_traceback()[-2000:]
         allocation.save(ignore_permissions=True)
+        session.last_error = str(exc)[:2000]
+        session.save(ignore_permissions=True)
         recalculate_session(session)
         raise
 
@@ -367,6 +441,7 @@ def begin_async_electronic_sale(
     warehouse=None,
     computer_name=None,
     pos_station=None,
+    pos_opening_shift=None,
     cart_reference=None,
     provider_account=None,
     payment_method="KNET",
@@ -411,11 +486,21 @@ def begin_async_electronic_sale(
         warehouse=warehouse,
         computer_name=computer_name,
         pos_station=pos_station,
+        pos_opening_shift=pos_opening_shift,
         cart_reference=cart_reference,
         idempotency_key=f"{base_key}:SESSION",
         draft_payload=draft_payload,
     )
     session_name = session["name"]
+
+    # Payment safety: validate and persist the exact Sales Invoice draft BEFORE
+    # creating a provider payment request. If the site's normal invoice
+    # validation rejects the cart, no gateway transaction/link is created.
+    prepare_pos_invoice(
+        session_name=session_name,
+        invoice_payload=draft_payload,
+        invoice_doctype="Sales Invoice",
+    )
 
     electronic = create_payment_link(
         session_name=session_name,
@@ -499,6 +584,11 @@ def send_payment_link(allocation_name):
         frappe.throw("Only Electronic Payment allocations can send a payment link.")
     if allocation.status == "Captured":
         frappe.throw("This payment is already captured.")
+    if allocation.status != "Waiting":
+        frappe.throw(
+            f"This payment attempt is {allocation.status}. "
+            "Create a new payment link instead of resending the old link."
+        )
     if not allocation.mobile_number:
         frappe.throw("Mobile number is missing for this payment allocation.")
     message = compose_payment_message(allocation.name)
@@ -522,6 +612,141 @@ def send_payment_link(allocation_name):
 @frappe.whitelist()
 def resend_payment_link(allocation_name):
     return send_payment_link(allocation_name)
+
+
+@frappe.whitelist()
+def create_new_payment_link(
+    session_name,
+    amount=None,
+    mobile_number=None,
+    provider_account=None,
+    payment_method=None,
+    mode_of_payment=None,
+    send_whatsapp=1,
+):
+    """Create a fresh gateway attempt for the still-unpaid balance.
+
+    Failed/expired attempts are preserved for audit. A second link is refused
+    while any earlier provider transaction is still remotely Pending, which
+    prevents two simultaneously-payable links for the same balance.
+    """
+    session = frappe.get_doc("POS Payment Session", session_name)
+    assert_open_session(session)
+    session = recalculate_session(session)
+
+    if flt(session.confirmed_paid_amount, 3) >= flt(session.grand_total, 3):
+        frappe.throw("This sale is already fully paid. Complete the existing invoice instead.")
+
+    electronic_rows = [
+        row for row in allocation_rows(session.name)
+        if row.channel == "Electronic Payment"
+    ]
+    previous = electronic_rows[-1] if electronic_rows else None
+
+    # Recheck every still-active electronic attempt before opening another
+    # payable URL. This is intentionally fail-closed: two remotely Pending links
+    # must never exist for the same unpaid balance.
+    for old_row in electronic_rows:
+        if old_row.status not in ("Waiting", "Expired", "Failed") or not old_row.gateway_transaction:
+            continue
+        txn = frappe.get_doc("Gateway Transaction", old_row.gateway_transaction)
+        if txn.status == "Pending" or old_row.status == "Waiting":
+            try:
+                check_pos_payment(old_row.name)
+                old_row = frappe.get_doc("POS Payment Allocation", old_row.name)
+                txn = frappe.get_doc("Gateway Transaction", old_row.gateway_transaction)
+            except Exception:
+                frappe.throw(
+                    "Unable to confirm a previous payment attempt is closed. "
+                    "Check its status before creating another link."
+                )
+        if txn.status == "Pending" or old_row.status == "Waiting":
+            frappe.throw(
+                f"Previous payment attempt {old_row.name} is still Pending. "
+                "A new link cannot be created until it is Failed/Expired or Captured."
+            )
+        if txn.status == "Captured" or old_row.status == "Captured":
+            recalculate_session(session)
+            frappe.throw(f"Previous payment attempt {old_row.name} has already been captured.")
+
+    available = flt(available_to_allocate(session), 3)
+    requested = flt(amount, 3) if amount not in (None, "") else available
+    if requested <= 0:
+        frappe.throw("There is no unpaid balance available for a new payment link.")
+    if requested > available:
+        frappe.throw(f"Maximum unpaid balance is {available:.3f} {session.currency}.")
+
+    previous_txn = None
+    if previous and previous.gateway_transaction:
+        previous_txn = frappe.get_doc("Gateway Transaction", previous.gateway_transaction)
+
+    result = create_payment_link(
+        session_name=session.name,
+        amount=requested,
+        mobile_number=mobile_number or (previous.mobile_number if previous else None) or session.mobile_number,
+        provider_account=provider_account or (previous.provider_account if previous else None),
+        payment_method=payment_method
+        or (previous_txn.payment_method if previous_txn else None)
+        or "KNET",
+        mode_of_payment=mode_of_payment or (previous.mode_of_payment if previous else None),
+        idempotency_key=make_idempotency("RETRY", session.name),
+    )
+
+    allocation = result["allocation"]
+    session.reload()
+    session.last_error = None
+    session.save(ignore_permissions=True)
+    whatsapp = None
+    if cint(send_whatsapp) and allocation.get("status") == "Waiting":
+        whatsapp = send_payment_link(allocation["name"])
+
+    return {
+        "session": get_pos_session(session.name),
+        "electronic_allocation": _allocation_response(
+            frappe.get_doc("POS Payment Allocation", allocation["name"])
+        ),
+        "payment_message": compose_payment_message(allocation["name"]),
+        "whatsapp": whatsapp,
+        "previous_allocation": previous.name if previous else None,
+    }
+
+
+@frappe.whitelist()
+def get_pos_draft_print(session_name, print_format=None, print_type=None):
+    """Return the printable draft for an unpaid/partially-paid POS session."""
+    session = frappe.get_doc("POS Payment Session", session_name)
+    from erpnext_payment_hub.pos.invoice import build_print_result, resolve_draft_print_format
+
+    resolved_print_format, resolved_print_type = resolve_draft_print_format(
+        print_format=print_format, print_type=print_type
+    )
+    if session.finalized:
+        frappe.throw("This POS Payment Session is already completed.")
+
+    payment_state = (
+        "Partially Paid" if flt(session.confirmed_paid_amount, 3) > 0 else "Unpaid"
+    )
+
+    if not session.invoice_name:
+        prepared = prepare_pos_invoice(
+            session_name=session.name,
+            invoice_payload=session.draft_payload,
+            invoice_doctype=session.invoice_doctype or "Sales Invoice",
+            print_format=resolved_print_format,
+        )
+        return {
+            **prepared,
+            "print_type": resolved_print_type,
+            "payment_state": payment_state,
+        }
+
+    doc = frappe.get_doc(session.invoice_doctype or "Sales Invoice", session.invoice_name)
+    return {
+        "session": _session_response(session),
+        "invoice": build_print_result(doc, print_format=resolved_print_format),
+        "print_type": resolved_print_type,
+        "payment_state": payment_state,
+    }
 
 
 @frappe.whitelist()
@@ -686,14 +911,21 @@ def complete_pos_session(
         effective_invoice_doctype = invoice_doctype or "Sales Invoice"
 
     from erpnext_payment_hub.pos.invoice import create_or_update_invoice
-    doc, invoice_result = create_or_update_invoice(
-        session,
-        invoice_doctype=effective_invoice_doctype,
-        invoice_name=effective_invoice_name,
-        invoice_payload=invoice_payload,
-        submit=submit_requested,
-        print_format=print_format,
-    )
+    try:
+        doc, invoice_result = create_or_update_invoice(
+            session,
+            invoice_doctype=effective_invoice_doctype,
+            invoice_name=effective_invoice_name,
+            invoice_payload=invoice_payload,
+            submit=submit_requested,
+            print_format=print_format,
+        )
+    except Exception as exc:
+        # Money may already be captured. Preserve the useful native ERPNext/POS
+        # validation message and keep the session recoverable for retry.
+        session.last_error = str(exc)[:2000]
+        session.save(ignore_permissions=True)
+        raise
 
     session.invoice_doctype = doc.doctype
     session.invoice_name = doc.name
@@ -796,6 +1028,20 @@ def check_session_payments(session_name):
 
 
 @frappe.whitelist()
+def get_payment_hub_pos_context(
+    current_pos_profile=None,
+    current_pos_opening_shift=None,
+    selected_pos_profile=None,
+):
+    """Return cashier/admin profile and shift defaults for the Payment Hub POS dialog."""
+    return build_scope_context(
+        current_pos_profile=current_pos_profile,
+        current_pos_opening_shift=current_pos_opening_shift,
+        selected_pos_profile=selected_pos_profile,
+    )
+
+
+@frappe.whitelist()
 def get_pending_payments(pos_profile=None, pos_station=None, limit=50):
     filters = {"status": ["in", list(PENDING_SESSION_STATUSES)]}
     if pos_profile:
@@ -828,8 +1074,21 @@ def get_paid_pending_sales(pos_profile=None, pos_station=None, limit=50):
 
 
 
-def _queue_sessions(queue="Waiting", pos_profile=None, pos_station=None, search=None, limit=50):
+def _queue_sessions(
+    queue="Waiting",
+    pos_profile=None,
+    pos_station=None,
+    search=None,
+    limit=50,
+    pos_opening_shift=None,
+    from_date=None,
+    to_date=None,
+    current_pos_profile=None,
+):
     queue = (queue or "Waiting").strip().title()
+    pos_profile = effective_pos_profile(pos_profile, current_pos_profile)
+    validate_shift_scope(pos_opening_shift=pos_opening_shift, pos_profile=pos_profile)
+
     filters = {}
     if pos_profile:
         filters["pos_profile"] = pos_profile
@@ -837,25 +1096,48 @@ def _queue_sessions(queue="Waiting", pos_profile=None, pos_station=None, search=
         filters["pos_station"] = pos_station
 
     if queue == "Waiting":
-        # Includes incomplete split sales (for example cash captured + a failed
-        # electronic attempt) so the cashier can resume and collect the balance.
+        # Waiting is intentionally profile-scoped, not shift/date-scoped. A link
+        # created near shift close must remain visible to the next cashier until
+        # the recovery window expires or the payment is resolved.
         filters["status"] = ["in", ["Draft", *list(PENDING_SESSION_STATUSES)]]
+        filters["recover_until"] = [">=", now_datetime()]
     elif queue in ("Paid", "Ready"):
         filters["status"] = ["in", list(PAID_PENDING_SESSION_STATUSES)]
     elif queue in ("Failed", "Expired", "Cancelled"):
         if queue == "Failed":
-            allocation_sessions = frappe.get_all(
+            attempts = frappe.get_all(
                 "POS Payment Allocation",
-                filters={"status": ["in", ["Failed", "Expired"]]},
-                pluck="session",
-                limit=1000,
+                filters={"channel": "Electronic Payment"},
+                fields=["session", "status", "sequence", "creation"],
+                order_by="session asc, sequence desc, creation desc",
+                limit=5000,
             )
-            filters["name"] = ["in", list(dict.fromkeys(allocation_sessions)) or ["__none__"]]
+            latest = {}
+            for attempt in attempts:
+                if attempt.session not in latest:
+                    latest[attempt.session] = attempt
+            allocation_sessions = [
+                name for name, attempt in latest.items()
+                if attempt.status in ("Failed", "Expired")
+            ]
+            filters["name"] = ["in", allocation_sessions or ["__none__"]]
             filters["status"] = ["!=", "Completed"]
         else:
             filters["status"] = queue
     elif queue == "Completed":
         filters["status"] = "Completed"
+
+    # Paid/Failed/history-style queues default to a shift. Date ranges are used
+    # only when the user explicitly selects Today/Yesterday/Custom.
+    if queue != "Waiting":
+        if pos_opening_shift:
+            filters["pos_opening_shift"] = pos_opening_shift
+        elif from_date and to_date:
+            filters["business_date"] = ["between", [from_date, to_date]]
+        elif from_date:
+            filters["business_date"] = [">=", from_date]
+        elif to_date:
+            filters["business_date"] = ["<=", to_date]
 
     or_filters = None
     if search:
@@ -875,9 +1157,11 @@ def _queue_sessions(queue="Waiting", pos_profile=None, pos_station=None, search=
         or_filters=or_filters,
         fields=[
             "name", "status", "pos_system", "pos_profile", "pos_station",
+            "pos_opening_shift", "business_date", "owner",
             "customer", "customer_name", "mobile_number", "currency",
             "grand_total", "confirmed_paid_amount", "pending_amount",
             "remaining_amount", "cart_reference", "invoice_doctype", "invoice_name",
+            "last_error", "recover_until", "preflight_validated_at",
             "paid_at", "completed_at", "creation", "modified",
         ],
         order_by="modified desc",
@@ -886,8 +1170,25 @@ def _queue_sessions(queue="Waiting", pos_profile=None, pos_station=None, search=
 
 
 @frappe.whitelist()
-def get_sales_queue(queue="Waiting", pos_profile=None, pos_station=None, search=None, limit=50):
-    rows = _queue_sessions(queue, pos_profile, pos_station, search, limit)
+def get_sales_queue(
+    queue="Waiting",
+    pos_profile=None,
+    pos_station=None,
+    search=None,
+    limit=50,
+    pos_opening_shift=None,
+    from_date=None,
+    to_date=None,
+    current_pos_profile=None,
+    current_pos_opening_shift=None,
+):
+    rows = _queue_sessions(
+        queue, pos_profile, pos_station, search, limit,
+        pos_opening_shift=pos_opening_shift,
+        from_date=from_date,
+        to_date=to_date,
+        current_pos_profile=current_pos_profile,
+    )
     session_names = [row.name for row in rows]
     latest_electronic = {}
     if session_names:
@@ -898,11 +1199,11 @@ def get_sales_queue(queue="Waiting", pos_profile=None, pos_station=None, search=
                 "channel": "Electronic Payment",
             },
             fields=[
-                "name", "session", "status", "link_send_count", "link_sent_at",
+                "name", "session", "sequence", "status", "link_send_count", "link_sent_at",
                 "last_whatsapp_message", "gateway_transaction", "provider",
                 "actual_payment_method", "payment_url", "modified",
             ],
-            order_by="modified desc",
+            order_by="session asc, sequence desc, creation desc",
         )
         for allocation in allocations:
             if allocation.session not in latest_electronic:
@@ -910,6 +1211,12 @@ def get_sales_queue(queue="Waiting", pos_profile=None, pos_station=None, search=
 
     for row in rows:
         allocation = latest_electronic.get(row.name)
+        row["cashier_user"] = row.owner
+        row["is_previous_shift"] = bool(
+            current_pos_opening_shift
+            and row.pos_opening_shift
+            and row.pos_opening_shift != current_pos_opening_shift
+        )
         row["electronic_allocation"] = allocation.name if allocation else None
         row["electronic_status"] = allocation.status if allocation else None
         row["link_send_count"] = int(allocation.link_send_count or 0) if allocation else 0
@@ -932,9 +1239,25 @@ def get_sales_queue(queue="Waiting", pos_profile=None, pos_station=None, search=
 
 
 @frappe.whitelist()
-def get_sales_queue_counts(pos_profile=None, pos_station=None):
+def get_sales_queue_counts(
+    pos_profile=None,
+    pos_station=None,
+    pos_opening_shift=None,
+    from_date=None,
+    to_date=None,
+    current_pos_profile=None,
+    current_pos_opening_shift=None,
+):
+    common = dict(
+        pos_profile=pos_profile,
+        pos_station=pos_station,
+        pos_opening_shift=pos_opening_shift,
+        from_date=from_date,
+        to_date=to_date,
+        current_pos_profile=current_pos_profile,
+    )
     return {
-        "waiting": len(_queue_sessions("Waiting", pos_profile, pos_station, limit=500)),
-        "paid": len(_queue_sessions("Paid", pos_profile, pos_station, limit=500)),
-        "failed": len(_queue_sessions("Failed", pos_profile, pos_station, limit=500)),
+        "waiting": len(_queue_sessions("Waiting", limit=500, **common)),
+        "paid": len(_queue_sessions("Paid", limit=500, **common)),
+        "failed": len(_queue_sessions("Failed", limit=500, **common)),
     }

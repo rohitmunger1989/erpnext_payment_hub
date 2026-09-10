@@ -38,7 +38,8 @@ scheduler_events = {
     "cron": {
         "*/5 * * * *": [
             "erpnext_payment_hub.pos.service.reconcile_pending_pos_payments",
-            "erpnext_payment_hub.pos.service.expire_stale_pos_payments"
+            "erpnext_payment_hub.pos.service.expire_stale_pos_payments",
+            "erpnext_payment_hub.pos.service.expire_stale_pos_sessions"
         ]
     }
 }

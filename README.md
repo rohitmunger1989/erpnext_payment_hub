@@ -1,4 +1,4 @@
-# ERPNext Payment Hub — v0.6.1
+# ERPNext Payment Hub — v0.6.4
 
 Provider-agnostic payment gateway foundation for ERPNext.
 
@@ -948,3 +948,125 @@ bench restart
 ```
 
 No manual Bench Console command is required. The icon remains permission-gated by `erpnext_payment_hub.permissions.check_app_permission`.
+
+
+## v0.6.2 — Safer POS Electronic Payment Preflight & Recovery
+
+v0.6.2 changes the asynchronous POS flow so Payment Hub **saves and validates the exact
+Sales Invoice draft before creating an electronic gateway payment request**. The draft save
+uses the site's normal Sales Invoice validation stack, including ERPNext and any installed
+company/POS validation hooks. Payment Hub does not hardcode tax, negative-stock, selling-rate
+or POS-shift policy; it follows the rules already enforced by the site.
+
+New flow:
+
+```text
+POS cart
+  -> create Payment Hub session
+  -> save/validate Sales Invoice draft
+  -> validation fails: stop, no gateway link, customer not charged
+  -> validation succeeds: create gateway payment attempt and optionally send WhatsApp
+  -> provider captures payment
+  -> submit the same validated draft invoice
+```
+
+The preflight deliberately avoids a fake submit/rollback because submit hooks may have external
+side effects. Submit-only accounting/stock validations can therefore still fail later; if money
+has already been captured, Payment Hub preserves the native validation error in the session and
+keeps the same draft recoverable for correction and retry.
+
+### 24-hour sale recovery vs gateway-link expiry
+
+A POS payment session is recoverable for **24 hours by default** (`Pending Sale Retention
+(Hours)`). This is separate from the lifetime of an individual provider payment URL. Each
+gateway attempt keeps its own expiry and provider limits still apply.
+
+A failed/expired electronic attempt no longer destroys the whole sale. Within the recovery
+window the cashier can create a **new gateway attempt** for the unpaid balance. Previous attempts
+remain in Gateway Transaction / Payment Allocation history.
+
+For duplicate-payment protection, Payment Hub fails closed when any previous provider attempt
+still reports `Pending`; it will not create a second payable URL until the previous attempt is
+confirmed Failed/Expired or Captured.
+
+### POS queue recovery actions
+
+The POSNext Payment Hub queue can now expose:
+
+- **Create New Link** — creates a fresh gateway attempt and copies the URL where browser
+  clipboard access is available.
+- **New Link + WhatsApp** — creates a fresh attempt and sends that new URL through the configured
+  WhatsApp integration.
+- **Print Unpaid Draft** — prints the saved draft Sales Invoice for unpaid or partially-paid
+  sessions.
+- Native validation errors are retained on the Payment Hub session and surfaced in the queue.
+- Failed sessions remain recoverable until the configured recovery deadline. Sessions with
+  captured money are never auto-expired by the unpaid-session timer.
+
+`resend_payment_link` now only resends a currently `Waiting` attempt. Failed/Expired URLs must
+use the new-link flow so stale provider links are not presented to customers.
+
+
+## v0.6.3 — POS Draft Ownership Safety Hotfix
+
+v0.6.3 fixes a critical draft-reuse edge case discovered while testing v0.6.2.
+A new POS cart could carry a stale Sales Invoice ``name`` in its payload and cause
+a newer Payment Hub session to reuse an invoice already referenced by an older
+session.  Payment Hub now owns invoice identity server-side:
+
+- a new payment session always creates a fresh Sales Invoice draft and ignores
+  stale ``name`` / document metadata supplied by a new-cart payload;
+- once a session has an ``invoice_name``, retries continue to reuse only that
+  session's explicit draft;
+- before reusing a draft, Payment Hub rejects the operation if another
+  ``POS Payment Session`` already claims the same invoice; and
+- captured gateway transactions remain attached to their own payment session,
+  preventing a later cart from hijacking a paid session's draft.
+
+Existing duplicate references are not silently rewritten during migration.
+They should be reviewed and repaired explicitly so a submitted invoice is never
+reassigned automatically.
+
+## v0.6.4 — POS Shift Scope, Branch Isolation and Draft Print Selection
+
+v0.6.4 makes the POS Payment Hub queue/report experience follow normal retail shift behavior while keeping unresolved electronic payments recoverable across shift handover.
+
+### POS shift and business-date scope
+
+- New POS sessions store `POS Opening Shift` and `Business Date`.
+- `Business Date` is the shift opening date, so an overnight shift such as 19:00 → 02:00 remains one reporting period after midnight.
+- Normal POS users default to **Current Shift**.
+- If there is no active shift, the dialog falls back to **Last Shift**; if no shift is available, it falls back to **Today**.
+- Available period selectors are **Current Shift**, **Last Shift**, **Today**, **Yesterday**, and **Custom Date Range** when applicable.
+
+### Waiting queue handover
+
+- **Waiting** deliberately ignores the current-shift/date filter.
+- It shows unresolved sessions for the selected/current POS Profile while they are inside the pending-sale recovery window.
+- A payment created near shift close therefore remains visible to the next cashier on the same POS Profile.
+- Rows expose original cashier, POS profile, opening shift and a **Previous Shift** indicator.
+
+### POS Profile isolation
+
+- Normal cashier UI is locked to the active/current POS Profile (for example KM or Jahra).
+- Users with cross-profile reporting roles (`System Manager`, `Accounts Manager`, `Payment Hub Auditor`) can select another profile or **All POS Profiles**.
+- When **All POS Profiles** is selected, the default period is **Today** because a single current shift cannot represent multiple profiles.
+
+### Draft printing
+
+Payment Hub Settings now includes:
+
+- **Draft A4 Print Format**
+- **Draft Receipt Print Format**
+- **Final Receipt Print Format**
+- **Default Draft Print Type** (`Receipt`, `A4`, `Ask Each Time`)
+
+The POS queue provides a **Draft Print** selector for unpaid/failed recovery documents. Draft printing remains non-posting: it does not submit the Sales Invoice and does not change payment state.
+
+The selected A4/receipt format is site-configurable rather than hardcoded. If the selected draft format is blank, Payment Hub falls back to **Default POS Print Format** and then `Standard`.
+
+### Upgrade corrections
+
+- Existing sites with `Pending Sale Retention (Hours) = 0` are corrected to **24 hours** during migrate.
+- Existing Payment Hub sessions are backfilled with shift/business-date context when it can be recovered from the saved POS payload or linked invoice.
+- v0.6.3 invoice-ownership protections remain in place; each Payment Hub session owns only its own Sales Invoice draft.

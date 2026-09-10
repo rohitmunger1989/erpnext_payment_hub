@@ -45,7 +45,9 @@ def ensure_settings_defaults():
         "async_electronic_payment": 1,
         "after_electronic_capture": "Mark Paid Only",
         "payment_link_expiry_minutes": 30,
+        "pending_sale_retention_hours": 24,
         "auto_expire_pending_sales": 1,
+        "default_draft_print_type": "Receipt",
         "default_print_format": "Standard",
         "require_authorization_cash_refund": 0,
         "require_authorization_electronic_refund": 1,
@@ -55,6 +57,10 @@ def ensure_settings_defaults():
     }
     for fieldname, value in defaults.items():
         _set_default(settings, fieldname, value)
+    # Existing v0.6.2/v0.6.3 sites may have stored 0 before this default was
+    # included in migration setup. Zero is not a valid retention window.
+    if hasattr(settings, "pending_sale_retention_hours") and int(settings.pending_sale_retention_hours or 0) <= 0:
+        settings.pending_sale_retention_hours = 24
     settings.save(ignore_permissions=True)
 
 
@@ -99,4 +105,7 @@ def after_migrate():
     """Idempotent post-migration setup for existing installations."""
     ensure_refund_roles()
     ensure_settings_defaults()
+    from erpnext_payment_hub.pos.scope import backfill_session_shift_context
+
+    backfill_session_shift_context()
     ensure_desktop_icon()

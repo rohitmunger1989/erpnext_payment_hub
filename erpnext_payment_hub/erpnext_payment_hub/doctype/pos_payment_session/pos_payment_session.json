@@ -16,6 +16,8 @@
     "branch",
     "pos_profile",
     "pos_station",
+    "pos_opening_shift",
+    "business_date",
     "computer_name",
     "warehouse",
     "customer_section",
@@ -32,6 +34,8 @@
     "draft_section",
     "draft_payload",
     "draft_saved_at",
+    "recover_until",
+    "preflight_validated_at",
     "invoice_section",
     "invoice_doctype",
     "invoice_name",
@@ -110,6 +114,23 @@
       "fieldtype": "Link",
       "options": "POS Station",
       "in_list_view": 1
+    },
+    {
+      "fieldname": "pos_opening_shift",
+      "label": "POS Opening Shift",
+      "fieldtype": "Data",
+      "search_index": 1,
+      "in_list_view": 1,
+      "description": "POSNext/POS Awesome shift reference. Stored as Data so Payment Hub does not require either POS app to be installed."
+    },
+    {
+      "fieldname": "business_date",
+      "label": "Business Date",
+      "fieldtype": "Date",
+      "search_index": 1,
+      "in_list_view": 1,
+      "read_only": 1,
+      "description": "Shift opening date. Overnight shifts remain grouped under this business date."
     },
     {
       "fieldname": "computer_name",
@@ -255,6 +276,18 @@
     {
       "fieldname": "draft_saved_at",
       "label": "Draft Saved At",
+      "fieldtype": "Datetime",
+      "read_only": 1
+    },
+    {
+      "fieldname": "recover_until",
+      "label": "Recover Until",
+      "fieldtype": "Datetime",
+      "read_only": 1
+    },
+    {
+      "fieldname": "preflight_validated_at",
+      "label": "Preflight Validated At",
       "fieldtype": "Datetime",
       "read_only": 1
     },
