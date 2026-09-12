@@ -1,6 +1,38 @@
-# ERPNext Payment Hub — v0.6.4
+# ERPNext Payment Hub — v0.6.5
 
 Provider-agnostic payment gateway foundation for ERPNext.
+
+
+## v0.6.5 — POSNext v2.0.0 compatibility
+
+v0.6.5 keeps the Payment Hub backend/payment/refund behavior from v0.6.4 and adds a dedicated frontend integration for **POSNext v2.0.0 at commit `e0a52c5`**.
+
+Supported POSNext integration bases included with this source:
+
+| POSNext base | Integration file | Notes |
+|---|---|---|
+| v2.0.0 / `e0a52c5` | `integrations/pos_next/pos_next_payment_hub_v0.6.5_posnext_v2.0.0_e0a52c5.patch` | Current adapter |
+| legacy / `fbf8e80` | `integrations/pos_next/pos_next_payment_hub_legacy_v0.6.4_fbf8e80.patch` | Previous consolidated adapter |
+
+The v2.0.0 adapter preserves:
+
+- Payment Hub Waiting / Paid / Failed queues
+- Current Shift -> Last Shift -> Today scope fallback
+- overnight shift/business-date behavior
+- 24-hour Waiting recovery across shift changes
+- POS Profile isolation for normal cashiers and All POS Profiles for permitted managers/admins
+- transaction history and daily reports
+- original cashier/shift plus Previous Shift indication
+- Receipt/Thermal and A4 draft printing
+- asynchronous Electronic Payment / WhatsApp payment links
+- Payment Hub-managed return/refund source locking
+- manager/admin refund authorization and audited Cash override
+- pending provider refund + Check Refund continuation
+- invoice ownership/refund protection enforced by the backend
+
+The adapter intentionally does **not** modify `POS/components.d.ts` or `pos_next/fixtures/custom_docperm.json`.
+
+See `integrations/pos_next/README.md` before applying a POSNext patch. Never apply both POSNext patches to the same checkout.
 
 Supported adapters in Phase 1:
 

@@ -1,0 +1,2183 @@
+diff --git a/POS/src/components/invoices/InvoiceDetailDialog.vue b/POS/src/components/invoices/InvoiceDetailDialog.vue
+index f05f2c3..9c500e2 100644
+--- a/POS/src/components/invoices/InvoiceDetailDialog.vue
++++ b/POS/src/components/invoices/InvoiceDetailDialog.vue
+@@ -56,8 +56,60 @@
+ 					</div>
+ 				</div>
+ 
++				<!-- Payment Hub refund result -->
++				<div
++					v-if="invoiceData.is_return && paymentHubRefundInfo?.managed"
++					:class="[
++						'rounded-lg p-4 border',
++						paymentHubRefundInfo.all_complete
++							? 'bg-gradient-to-r rtl:bg-gradient-to-l from-green-50 to-emerald-50 border-green-200'
++							: paymentHubRefundInfo.needs_review
++								? 'bg-red-50 border-red-200'
++								: 'bg-amber-50 border-amber-200'
++					]"
++				>
++					<div class="flex items-start gap-3">
++						<div class="w-8 h-8 rounded-full bg-white/70 flex items-center justify-center flex-shrink-0 border">
++							<svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
++								<path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z"/>
++							</svg>
++						</div>
++						<div class="text-start flex-1 min-w-0">
++							<h4 class="text-sm font-semibold">
++								{{ paymentHubRefundInfo.all_complete ? __('Payment Hub Refund Completed') : paymentHubRefundInfo.needs_review ? __('Refund Review Required') : __('Refund Pending') }}
++							</h4>
++							<p class="text-xs mt-1 opacity-80">
++								{{ __('Refund is tied to the original payment source and provider transaction.') }}
++							</p>
++							<div class="mt-3 flex flex-col gap-2">
++								<div v-for="row in paymentHubRefundInfo.rows" :key="row.name" class="rounded-md border bg-white/70 px-3 py-2">
++									<div class="flex items-center justify-between gap-3">
++										<div class="min-w-0">
++											<div class="text-xs font-semibold text-gray-900">{{ row.actual_refund_mode_of_payment || row.mode_of_payment }}</div>
++											<div class="text-[11px] text-gray-600 truncate">
++												<template v-if="row.is_override">{{ __('Override from') }} {{ row.provider ? `${row.provider}${row.actual_payment_method ? ' • ' + row.actual_payment_method : ''}` : row.channel }} {{ __('to') }} {{ row.actual_refund_channel }}</template>
++												<template v-else>{{ row.provider ? `${row.provider}${row.actual_payment_method ? ' • ' + row.actual_payment_method : ''}` : row.channel }}</template>
++											</div>
++										</div>
++										<div class="text-end flex-shrink-0">
++											<div class="text-sm font-bold text-gray-900">{{ formatCurrency(-Math.abs(row.amount || 0)) }}</div>
++											<div class="text-[10px] text-gray-500">{{ __(row.status) }}</div>
++										</div>
++									</div>
++									<div v-if="row.refund_gateway_transaction" class="text-[10px] text-gray-500 mt-1">
++										{{ __('Refund Transaction:') }} {{ row.refund_gateway_transaction }}
++									</div>
++									<div v-if="row.authorized_by" class="text-[10px] text-violet-700 mt-1">
++										{{ __('Authorized By:') }} {{ row.authorized_by }}<span v-if="row.override_reason"> · {{ row.override_reason }}</span>
++									</div>
++								</div>
++							</div>
++						</div>
++					</div>
++				</div>
++
+ 				<!-- Return Type Notice: Added to Customer Credit (no payments, negative outstanding) -->
+-				<div v-if="invoiceData.is_return && isAddedToCustomerCredit" class="bg-gradient-to-r rtl:bg-gradient-to-l from-blue-50 to-indigo-50 rounded-lg p-4 border border-blue-200">
++				<div v-if="invoiceData.is_return && !paymentHubRefundInfo?.managed && isAddedToCustomerCredit" class="bg-gradient-to-r rtl:bg-gradient-to-l from-blue-50 to-indigo-50 rounded-lg p-4 border border-blue-200">
+ 					<div class="flex items-start gap-3">
+ 						<div class="w-8 h-8 rounded-full bg-blue-200 flex items-center justify-center flex-shrink-0">
+ 							<svg class="w-4 h-4 text-blue-700" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+@@ -73,8 +125,8 @@
+ 					</div>
+ 				</div>
+ 
+-				<!-- Return Type Notice: Cash Refund (has payments) -->
+-				<div v-else-if="invoiceData.is_return && isCashRefund" class="bg-gradient-to-r rtl:bg-gradient-to-l from-green-50 to-emerald-50 rounded-lg p-4 border border-green-200">
++				<!-- Return Type Notice: Recorded refund for non-Payment-Hub returns -->
++				<div v-else-if="invoiceData.is_return && !paymentHubRefundInfo?.managed && hasReturnPayments" class="bg-gradient-to-r rtl:bg-gradient-to-l from-green-50 to-emerald-50 rounded-lg p-4 border border-green-200">
+ 					<div class="flex items-start gap-3">
+ 						<div class="w-8 h-8 rounded-full bg-green-200 flex items-center justify-center flex-shrink-0">
+ 							<svg class="w-4 h-4 text-green-700" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+@@ -82,9 +134,9 @@
+ 							</svg>
+ 						</div>
+ 						<div class="text-start flex-1">
+-							<h4 class="text-sm font-semibold text-green-900">{{ __('Cash Refund') }}</h4>
++							<h4 class="text-sm font-semibold text-green-900">{{ isCashRefund ? __('Cash Refund') : __('Refund Recorded') }}</h4>
+ 							<p class="text-xs text-green-700 mt-1">
+-								{{ __('The customer received a cash refund for this return.') }}
++								{{ isCashRefund ? __('The customer received a cash refund for this return.') : __('A refund payment row was recorded on this return. Provider settlement is not implied unless Payment Hub details are shown.') }}
+ 							</p>
+ 						</div>
+ 					</div>
+@@ -305,6 +357,7 @@ const emit = defineEmits(["update:modelValue", "print-invoice"])
+ const show = ref(props.modelValue)
+ const loading = ref(false)
+ const invoiceData = ref(null)
++const paymentHubRefundInfo = ref(null)
+ 
+ // Computed: Check if this is a credit sale (Pay on Account - no payments, full outstanding)
+ const isCreditSale = computed(() => {
+@@ -327,14 +380,22 @@ const isAddedToCustomerCredit = computed(() => {
+ 	return (hasNoPayments || totalPaid < 0.01) && hasNegativeOutstanding
+ })
+ 
+-// Computed: Check if this return was a cash refund (has payments)
+-const isCashRefund = computed(() => {
++const hasReturnPayments = computed(() => {
+ 	if (!invoiceData.value || !invoiceData.value.is_return) return false
+ 	const totalPaid = invoiceData.value.payments?.reduce((sum, p) => sum + Math.abs(p.amount || 0), 0) || 0
+-	// Cash refund if payments were made (refund given)
+ 	return totalPaid >= 0.01
+ })
+ 
++// Only label a legacy/non-Payment-Hub return as Cash Refund when every
++// recorded refund payment is actually a cash mode. A bank/electronic row must
++// never be presented as proof that cash was handed to the customer.
++const isCashRefund = computed(() => {
++	if (!hasReturnPayments.value) return false
++	return (invoiceData.value.payments || []).every((payment) =>
++		String(payment.mode_of_payment || "").toLowerCase().includes("cash"),
++	)
++})
++
+ watch(
+ 	() => props.modelValue,
+ 	(val) => {
+@@ -350,6 +411,7 @@ watch(show, async (val) => {
+ 	if (!val) {
+ 		// Clear data when closing
+ 		invoiceData.value = null
++		paymentHubRefundInfo.value = null
+ 	} else {
+ 		// Ensure dialog appears above other dialogs
+ 		await nextTick()
+@@ -380,6 +442,18 @@ async function loadInvoiceDetails() {
+ 			}))
+ 		}
+ 		invoiceData.value = result
++		paymentHubRefundInfo.value = null
++		if (result?.is_return && result?.name) {
++			try {
++				const refundInfo = await call(
++					"erpnext_payment_hub.pos.refund.get_return_refund_status",
++					{ return_invoice: result.name },
++				)
++				if (refundInfo?.managed) paymentHubRefundInfo.value = refundInfo
++			} catch (refundError) {
++				log.debug("Payment Hub refund details unavailable:", refundError)
++			}
++		}
+ 	} catch (error) {
+ 		log.error("Error loading invoice details:", error)
+ 		invoiceData.value = null
+diff --git a/POS/src/components/pos/POSHeader.vue b/POS/src/components/pos/POSHeader.vue
+index cdc9783..7f06d2b 100644
+--- a/POS/src/components/pos/POSHeader.vue
++++ b/POS/src/components/pos/POSHeader.vue
+@@ -95,6 +95,26 @@
+ 						</span>
+ 					</button>
+ 
++					<!-- Payment Hub queue -->
++					<button
++						v-if="paymentHubEnabled && hasOpenShift && !isOffline"
++						@click="$emit('payment-hub-click')"
++						class="p-1.5 sm:p-2 hover:bg-gray-100 active:bg-gray-200 rounded-lg transition-colors relative touch-manipulation"
++						:title="__('Payment Hub: {0} waiting, {1} paid', [paymentHubPendingCount, paymentHubPaidCount])"
++						:aria-label="__('Open Payment Hub')"
++					>
++						<svg class="w-4 h-4 sm:w-5 sm:h-5" :class="paymentHubPaidCount > 0 ? 'text-green-600' : 'text-blue-600'" fill="none" stroke="currentColor" viewBox="0 0 24 24">
++							<path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M3 10h18M7 15h1m4 0h2m-9 5h14a2 2 0 002-2V6a2 2 0 00-2-2H5a2 2 0 00-2 2v12a2 2 0 002 2z"/>
++						</svg>
++						<span
++							v-if="paymentHubTotalCount > 0"
++							class="absolute -top-1 -end-1 text-white text-[10px] font-bold rounded-full min-w-[20px] h-5 px-1 flex items-center justify-center shadow-md"
++							:class="paymentHubPaidCount > 0 ? 'bg-green-600' : 'bg-blue-600'"
++						>
++							{{ paymentHubTotalCount }}
++						</span>
++					</button>
++
+ 					<!-- Cache Status Indicator -->
+ 					<div class="relative">
+ 						<button
+@@ -277,7 +297,7 @@ import StatusBadge from "@/components/common/StatusBadge.vue"
+ import UserMenu from "@/components/common/UserMenu.vue"
+ import LanguageSwitcher from "@/components/common/LanguageSwitcher.vue"
+ import { DEFAULT_LOCALE } from "@/utils/currency"
+-import { ref } from "vue"
++import { computed, ref } from "vue"
+ import { version } from "../../../package.json"
+ 
+ const showCacheTooltip = ref(false)
+@@ -292,6 +312,7 @@ const emit = defineEmits([
+ 	"menu-opened",
+ 	"menu-closed",
+ 	"clear-cache",
++	"payment-hub-click",
+ ])
+ 
+ function handleClearCacheClick() {
+@@ -345,6 +366,22 @@ const props = defineProps({
+ 		type: Number,
+ 		default: 0,
+ 	},
++	paymentHubEnabled: {
++		type: Boolean,
++		default: false,
++	},
++	paymentHubPendingCount: {
++		type: Number,
++		default: 0,
++	},
++	paymentHubPaidCount: {
++		type: Number,
++		default: 0,
++	},
++	paymentHubFailedCount: {
++		type: Number,
++		default: 0,
++	},
+ 	isAnyDialogOpen: {
+ 		type: Boolean,
+ 		default: false,
+@@ -375,6 +412,10 @@ const props = defineProps({
+ 	},
+ })
+ 
++const paymentHubTotalCount = computed(
++	() => props.paymentHubPendingCount + props.paymentHubPaidCount + props.paymentHubFailedCount,
++)
++
+ // Cache status helpers
+ function getCacheIconColor() {
+ 	if (!props.cacheStats || props.cacheStats.items === 0) {
+diff --git a/POS/src/components/sale/PaymentDialog.vue b/POS/src/components/sale/PaymentDialog.vue
+index 2f843e6..fb41e62 100644
+--- a/POS/src/components/sale/PaymentDialog.vue
++++ b/POS/src/components/sale/PaymentDialog.vue
+@@ -606,6 +606,26 @@
+ 						</div>
+ 						<div v-else :class="['text-gray-500', isSmallMobile ? 'text-xs' : 'text-sm']">{{ __('No payment methods available') }}</div>
+ 
++						<!-- Payment Hub mobile number for asynchronous Electronic Payment -->
++						<div
++							v-if="paymentHubElectronicActive"
++							class="mt-2 rounded-lg border border-green-200 bg-green-50 p-2"
++						>
++							<label class="mb-1 block text-xs font-semibold text-green-800">
++								{{ __('WhatsApp payment mobile') }}
++							</label>
++							<input
++								v-model="paymentHubMobileNumber"
++								type="tel"
++								inputmode="tel"
++								class="h-9 w-full rounded-lg border border-green-300 bg-white px-3 text-sm focus:border-green-500 focus:outline-none focus:ring-1 focus:ring-green-500"
++								:placeholder="__('Example: +96550835135')"
++							/>
++							<p class="mt-1 text-[10px] text-green-700">
++								{{ __('The secure payment link will be sent to this number.') }}
++							</p>
++						</div>
++
+ 						<!-- Exact Amount Mode Info Banner -->
+ 						<div v-if="isExactAmountModeActive && paymentEntries.length > 0 && hasNonCashPayment"
+ 							:class="['mt-2 p-2 rounded-lg border', !isExactAmountValid ? 'bg-red-50 border-red-200' : 'bg-green-50 border-green-200']">
+@@ -1090,6 +1110,10 @@ const props = defineProps({
+ 		type: Boolean,
+ 		default: false,
+ 	},
++	paymentHubConfig: {
++		type: Object,
++		default: () => ({}),
++	},
+ })
+ 
+ const emit = defineEmits([
+@@ -1108,6 +1132,7 @@ const loadingPaymentMethods = ref(false)
+ const lastSelectedMethod = ref(null)
+ const customAmount = ref("")
+ const paymentEntries = ref([])
++const paymentHubMobileNumber = ref("")
+ const customerCredit = ref([])
+ const customerBalance = ref({
+ 	total_outstanding: 0,
+@@ -2014,6 +2039,59 @@ watch(show, (newVal) => {
+ 	}
+ })
+ 
++const paymentHubElectronicMode = computed(
++	() => props.paymentHubConfig?.electronic_mode_of_payment || "Electronic Payment",
++)
++
++function normalizePaymentHubMode(value) {
++	return String(value || "").trim().toLowerCase()
++}
++
++function isPaymentHubElectronicModeName(value) {
++	const normalized = normalizePaymentHubMode(value)
++	return (
++		normalized === normalizePaymentHubMode(paymentHubElectronicMode.value) ||
++		normalized === "electronic payment"
++	)
++}
++
++function isPaymentHubElectronicMethod(method) {
++	return isPaymentHubElectronicModeName(method?.mode_of_payment)
++}
++
++const hasPaymentHubElectronicEntry = computed(() =>
++	paymentEntries.value.some(
++		(entry) => isPaymentHubElectronicModeName(entry.mode_of_payment) && Number(entry.amount || 0) > 0,
++	),
++)
++
++const paymentHubElectronicActive = computed(
++	() => hasPaymentHubElectronicEntry.value || isPaymentHubElectronicMethod(lastSelectedMethod.value),
++)
++
++function customerMobileValue() {
++	if (!props.customer || typeof props.customer === "string") return ""
++	return (
++		props.customer.mobile_no ||
++		props.customer.mobile_number ||
++		props.customer.contact_mobile ||
++		props.customer.phone ||
++		""
++	)
++}
++
++function normalizedPaymentHubMobile() {
++	const raw = String(paymentHubMobileNumber.value || "").trim()
++	const digits = raw.replace(/\D/g, "")
++	if (digits.length === 8) return `+965${digits}`
++	if (digits.length >= 10) return `+${digits}`
++	return raw
++}
++
++watch(show, (visible) => {
++	if (visible) paymentHubMobileNumber.value = customerMobileValue()
++})
++
+ // ===========================================
+ // Payment Method Press Handler (Long Press Support)
+ // Uses composable for clean, reusable press handling
+@@ -2402,6 +2480,14 @@ function completePayment() {
+ 		return
+ 	}
+ 
++	if (hasPaymentHubElectronicEntry.value) {
++		const digits = String(paymentHubMobileNumber.value || "").replace(/\D/g, "")
++		if (digits.length < 8) {
++			showWarning(__("Enter a valid mobile number for the WhatsApp payment link"))
++			return
++		}
++	}
++
+ 	// Calculate if this is a partial payment (considering write-off)
+ 	const effectivePaid = totalPaid.value + writeOffAmount.value
+ 	const isPartial = effectivePaid < props.grandTotal
+@@ -2411,6 +2497,9 @@ function completePayment() {
+ 		change_amount: changeAmount.value,
+ 		is_partial_payment: isPartial,
+ 		paid_amount: totalPaid.value,
++		payment_hub_mobile_number: hasPaymentHubElectronicEntry.value
++			? normalizedPaymentHubMobile()
++			: null,
+ 		outstanding_amount: isPartial
+ 			? remainingAmount.value - writeOffAmount.value
+ 			: 0,
+diff --git a/POS/src/components/sale/PaymentHubPendingDialog.vue b/POS/src/components/sale/PaymentHubPendingDialog.vue
+new file mode 100644
+index 0000000..1ea363a
+--- /dev/null
++++ b/POS/src/components/sale/PaymentHubPendingDialog.vue
+@@ -0,0 +1,716 @@
++<template>
++	<Dialog v-model="show" :options="{ title: __('Payment Hub'), size: '2xl' }">
++		<template #body-content>
++			<div class="space-y-3">
++				<!-- Main views -->
++				<div class="grid grid-cols-3 gap-2">
++					<button
++						v-for="view in views"
++						:key="view.key"
++						@click="activeView = view.key"
++						:class="[
++							'rounded-lg border px-2 py-2 text-xs sm:text-sm font-semibold transition-colors',
++							activeView === view.key
++								? 'border-blue-500 bg-blue-50 text-blue-700'
++								: 'border-gray-200 bg-white text-gray-600 hover:bg-gray-50',
++						]"
++					>
++						{{ __(view.label) }}
++					</button>
++				</div>
++
++
++				<!-- Profile / shift scope -->
++				<div class="rounded-lg border border-gray-200 bg-gray-50 p-2.5">
++					<div class="grid grid-cols-1 gap-2 sm:grid-cols-3">
++						<div>
++							<label class="mb-1 block text-[10px] font-semibold uppercase text-gray-500">{{ __('POS Profile') }}</label>
++							<select
++								v-if="scopeContext.can_view_all_profiles"
++								v-model="selectedProfile"
++								@change="handleProfileChange"
++								class="h-8 w-full rounded-lg border border-gray-300 bg-white px-2 text-xs"
++							>
++								<option value="__all__">{{ __('All POS Profiles') }}</option>
++								<option v-for="profile in scopeContext.profiles || []" :key="profile" :value="profile">{{ profile }}</option>
++							</select>
++							<div v-else class="flex h-8 items-center rounded-lg border border-gray-200 bg-white px-2 text-xs font-semibold text-gray-700">
++								{{ selectedProfile || props.posProfile || '-' }}
++							</div>
++						</div>
++
++						<div v-if="showScopeFilter">
++							<label class="mb-1 block text-[10px] font-semibold uppercase text-gray-500">{{ __('Period') }}</label>
++							<select v-model="selectedScope" @change="handleScopeChange" class="h-8 w-full rounded-lg border border-gray-300 bg-white px-2 text-xs">
++								<option v-for="option in scopeOptions" :key="option" :value="option">{{ __(option) }}</option>
++							</select>
++						</div>
++
++						<div v-if="showCustomDates" class="grid grid-cols-2 gap-1">
++							<div><label class="mb-1 block text-[10px] font-semibold uppercase text-gray-500">{{ __('From') }}</label><input v-model="customFromDate" @change="handleScopeChange" type="date" class="h-8 w-full rounded-lg border border-gray-300 bg-white px-1 text-xs" /></div>
++							<div><label class="mb-1 block text-[10px] font-semibold uppercase text-gray-500">{{ __('To') }}</label><input v-model="customToDate" @change="handleScopeChange" type="date" class="h-8 w-full rounded-lg border border-gray-300 bg-white px-1 text-xs" /></div>
++						</div>
++						<div v-else-if="showScopeFilter">
++							<label class="mb-1 block text-[10px] font-semibold uppercase text-gray-500">{{ __('Scope') }}</label>
++							<div class="flex h-8 items-center rounded-lg border border-gray-200 bg-white px-2 text-[11px] text-gray-600">{{ scopeDescription }}</div>
++						</div>
++						<div v-else class="sm:col-span-2">
++							<label class="mb-1 block text-[10px] font-semibold uppercase text-gray-500">{{ __('Waiting Queue') }}</label>
++							<div class="flex h-8 items-center rounded-lg border border-amber-200 bg-amber-50 px-2 text-[11px] text-amber-800">
++								{{ __('All unresolved payments for this profile within the {0}-hour recovery window', [recoveryHours]) }}
++							</div>
++						</div>
++					</div>
++				</div>
++
++				<!-- QUEUES -->
++				<template v-if="activeView === 'Queues'">
++					<div class="grid grid-cols-3 gap-2">
++						<button
++							v-for="tab in queueTabs"
++							:key="tab.key"
++							@click="activeQueue = tab.key"
++							:class="[
++								'rounded-lg border px-3 py-2 text-sm font-semibold transition-colors',
++								activeQueue === tab.key
++									? tab.activeClass
++									: 'border-gray-200 bg-white text-gray-600 hover:bg-gray-50',
++							]"
++						>
++							{{ __(tab.label) }}
++							<span class="ms-1 rounded-full bg-black/10 px-1.5 py-0.5 text-xs">
++								{{ counts[tab.countKey] || 0 }}
++							</span>
++						</button>
++					</div>
++
++					<div class="flex gap-2">
++						<input
++							v-model="queueSearch"
++							type="text"
++							class="h-9 flex-1 rounded-lg border border-gray-300 px-3 text-sm focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
++							:placeholder="__('Search session, customer, mobile or invoice')"
++							@keyup.enter="refreshQueues"
++						/>
++						<button @click="refreshQueues" :disabled="loading" class="h-9 rounded-lg bg-gray-800 px-4 text-sm font-semibold text-white disabled:opacity-50">
++							{{ loading ? __('Loading...') : __('Refresh') }}
++						</button>
++					</div>
++
++					<div v-if="activeQueue === 'Waiting' || activeQueue === 'Failed'" class="flex items-center justify-end gap-2 text-[11px] text-gray-600">
++						<span>{{ __('Draft Print') }}:</span>
++						<select v-model="draftPrintType" class="h-8 rounded-lg border border-gray-300 bg-white px-2 text-xs">
++							<option value="Receipt">{{ __('Receipt / Thermal') }}</option>
++							<option value="A4">{{ __('A4') }}</option>
++						</select>
++					</div>
++
++					<div v-if="loading && queueRows.length === 0" class="py-10 text-center text-sm text-gray-500">
++						{{ __('Loading Payment Hub sales...') }}
++					</div>
++					<div v-else-if="queueRows.length === 0" class="rounded-lg border border-dashed border-gray-300 py-10 text-center text-sm text-gray-500">
++						{{ __('No sales in this queue') }}
++					</div>
++					<div v-else class="max-h-[55vh] space-y-2 overflow-y-auto pe-1">
++						<div v-for="row in queueRows" :key="row.name" class="rounded-lg border border-gray-200 bg-white p-3 shadow-sm">
++							<div class="flex flex-wrap items-start justify-between gap-2">
++								<div>
++									<div class="font-semibold text-gray-900">{{ row.name }}</div>
++									<div class="mt-0.5 text-xs text-gray-500">
++										{{ row.customer_name || row.customer || __('Walk-in Customer') }}
++										<span v-if="row.mobile_number"> · {{ row.mobile_number }}</span>
++									</div>
++									<div v-if="row.provider" class="mt-1 text-[11px] text-blue-600">
++										{{ row.provider }}<span v-if="row.actual_payment_method"> · {{ row.actual_payment_method }}</span>
++									</div>
++									<div class="mt-1 flex flex-wrap items-center gap-1 text-[10px] text-gray-400">
++										<span v-if="row.pos_profile">{{ row.pos_profile }}</span>
++										<span v-if="row.pos_opening_shift">· {{ row.pos_opening_shift }}</span>
++										<span v-if="row.cashier_user">· {{ row.cashier_user }}</span>
++										<span v-if="row.is_previous_shift" class="rounded-full bg-amber-100 px-1.5 py-0.5 font-semibold text-amber-700">{{ __('Previous Shift') }}</span>
++									</div>
++								</div>
++								<div class="text-end">
++									<div class="text-base font-bold text-gray-900">{{ formatAmount(row.grand_total, row.currency) }}</div>
++									<div class="text-xs font-medium" :class="statusClass(row.status)">{{ __(row.status) }}</div>
++								</div>
++							</div>
++
++							<div class="mt-2 grid grid-cols-3 gap-2 rounded-lg bg-gray-50 p-2 text-center text-xs">
++								<div><div class="text-gray-500">{{ __('Paid') }}</div><div class="font-semibold">{{ formatAmount(row.confirmed_paid_amount, row.currency) }}</div></div>
++								<div><div class="text-gray-500">{{ __('Pending') }}</div><div class="font-semibold">{{ formatAmount(row.pending_amount, row.currency) }}</div></div>
++								<div><div class="text-gray-500">{{ __('Remaining') }}</div><div class="font-semibold">{{ formatAmount(row.remaining_amount, row.currency) }}</div></div>
++							</div>
++
++							<div v-if="activeQueue === 'Waiting' && row.link_send_count > 0" class="mt-2 text-[11px] text-gray-500">
++								{{ __('WhatsApp sent {0} time(s)', [row.link_send_count]) }}
++								<span v-if="row.link_sent_at"> · {{ formatDateTime(row.link_sent_at) }}</span>
++								<span v-if="row.whatsapp_status"> · {{ __(row.whatsapp_status) }}</span>
++							</div>
++							<div v-if="row.last_error" class="mt-2 rounded-md border border-red-100 bg-red-50 px-2 py-1.5 text-[11px] text-red-700 break-words">
++								{{ row.last_error }}
++							</div>
++							<div v-if="row.recover_until && activeQueue !== 'Paid'" class="mt-1 text-[10px] text-gray-400">
++								{{ __('Recoverable until') }} {{ formatDateTime(row.recover_until) }}
++							</div>
++
++							<div class="mt-3 flex flex-wrap justify-end gap-2">
++								<button v-if="activeQueue === 'Waiting' && row.electronic_status === 'Waiting'" @click="resend(row)" :disabled="actionName === row.name" class="rounded-lg border border-blue-200 bg-blue-50 px-3 py-1.5 text-xs font-semibold text-blue-700 disabled:opacity-50">
++									{{ row.link_send_count > 0 ? __('Resend WhatsApp') : __('Send WhatsApp') }}
++								</button>
++								<button v-if="activeQueue === 'Waiting'" @click="checkPayment(row)" :disabled="actionName === row.name" class="rounded-lg bg-amber-500 px-3 py-1.5 text-xs font-semibold text-white disabled:opacity-50">
++									{{ actionName === row.name ? __('Checking...') : __('Check Payment') }}
++								</button>
++								<button v-if="activeQueue === 'Waiting' || activeQueue === 'Failed'" @click="printDraft(row)" :disabled="actionName === row.name" class="rounded-lg border border-gray-300 bg-white px-3 py-1.5 text-xs font-semibold text-gray-700 disabled:opacity-50">
++									{{ __('Print Unpaid Draft') }}
++								</button>
++								<button v-if="activeQueue === 'Failed'" @click="newPaymentLink(row, false)" :disabled="actionName === row.name" class="rounded-lg border border-blue-300 bg-white px-3 py-1.5 text-xs font-semibold text-blue-700 disabled:opacity-50">
++									{{ __('Create New Link') }}
++								</button>
++								<button v-if="activeQueue === 'Failed'" @click="newPaymentLink(row, true)" :disabled="actionName === row.name" class="rounded-lg bg-blue-600 px-3 py-1.5 text-xs font-semibold text-white disabled:opacity-50">
++									{{ actionName === row.name ? __('Creating...') : __('New Link + WhatsApp') }}
++								</button>
++								<button v-if="activeQueue === 'Paid'" @click="completeAndPrint(row)" :disabled="actionName === row.name" class="rounded-lg bg-green-600 px-3 py-1.5 text-xs font-semibold text-white disabled:opacity-50">
++									{{ actionName === row.name ? __('Completing...') : __('Complete & Print') }}
++								</button>
++							</div>
++						</div>
++					</div>
++				</template>
++
++				<!-- TRANSACTION HISTORY -->
++				<template v-else-if="activeView === 'History'">
++					<div class="rounded-lg border border-blue-100 bg-blue-50 p-3 text-xs text-blue-800">
++						{{ __('Search a customer payment or refund by mobile number, customer, invoice, return invoice, Payment Hub transaction or provider transaction/refund ID.') }}
++					</div>
++					<div class="flex gap-2">
++						<input v-model="historySearch" type="text" class="h-9 flex-1 rounded-lg border border-gray-300 px-3 text-sm focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500" :placeholder="__('Mobile, invoice, customer, transaction or refund ID')" @keyup.enter="loadHistory" />
++						<button @click="loadHistory" :disabled="historyLoading" class="h-9 rounded-lg bg-blue-600 px-4 text-sm font-semibold text-white disabled:opacity-50">{{ historyLoading ? __('Searching...') : __('Search') }}</button>
++					</div>
++					<div class="flex flex-wrap justify-end gap-2">
++						<button @click="exportHistory('xlsx')" :disabled="historyRows.length === 0" class="rounded-lg border border-emerald-200 bg-emerald-50 px-3 py-1.5 text-xs font-semibold text-emerald-700 disabled:cursor-not-allowed disabled:opacity-40">{{ __('Export Excel') }}</button>
++						<button @click="exportHistory('pdf')" :disabled="historyRows.length === 0" class="rounded-lg border border-red-200 bg-red-50 px-3 py-1.5 text-xs font-semibold text-red-700 disabled:cursor-not-allowed disabled:opacity-40">{{ __('Export PDF') }}</button>
++					</div>
++					<div v-if="historyLoading && historyRows.length === 0" class="py-10 text-center text-sm text-gray-500">{{ __('Loading transaction history...') }}</div>
++					<div v-else-if="historyRows.length === 0" class="rounded-lg border border-dashed border-gray-300 py-10 text-center text-sm text-gray-500">{{ __('No transactions found') }}</div>
++					<div v-else class="max-h-[58vh] space-y-2 overflow-y-auto pe-1">
++						<div v-for="(row, index) in historyRows" :key="historyKey(row, index)" class="rounded-lg border border-gray-200 bg-white p-3">
++							<div class="flex items-start justify-between gap-3">
++								<div class="min-w-0">
++									<div class="flex flex-wrap items-center gap-2">
++										<span :class="historyTypeClass(row.transaction_type)" class="rounded-full px-2 py-0.5 text-[10px] font-bold uppercase">{{ __(row.transaction_type) }}</span>
++										<span class="text-sm font-bold text-gray-900">{{ row.return_invoice || row.invoice || row.session || row.gateway_transaction }}</span>
++									</div>
++									<div class="mt-1 text-xs text-gray-500">{{ row.customer_name || row.customer || __('Walk-in Customer') }}<span v-if="row.mobile_number"> · {{ row.mobile_number }}</span></div>
++									<div class="mt-1 text-[11px] text-gray-600">{{ row.mode_of_payment || row.channel || '-' }}<span v-if="row.provider"> · {{ row.provider }}</span><span v-if="row.actual_payment_method"> · {{ row.actual_payment_method }}</span></div>
++									<div class="mt-1 text-[10px] text-gray-400">{{ formatDateTime(row.transaction_datetime) }}<span v-if="row.gateway_transaction"> · {{ row.gateway_transaction }}</span></div>
++									<div v-if="row.provider_refund_id || row.provider_transaction_id" class="mt-1 break-all text-[10px] text-gray-500">
++										{{ row.provider_refund_id ? __('Refund ID:') : __('Provider Transaction:') }} {{ row.provider_refund_id || row.provider_transaction_id }}
++									</div>
++									<div v-if="row.is_override" class="mt-1 text-[10px] font-semibold text-orange-700">{{ __('Refund override') }} · {{ __('Authorized by') }} {{ row.authorized_by || '-' }}<span v-if="row.override_reason"> · {{ row.override_reason }}</span></div>
++								</div>
++								<div class="flex-shrink-0 text-end">
++									<div :class="row.transaction_type === 'Refund' ? 'text-red-600' : 'text-gray-900'" class="text-base font-bold">{{ row.transaction_type === 'Refund' ? '-' : '' }}{{ formatAmount(row.amount, row.currency) }}</div>
++									<div class="text-xs font-semibold" :class="statusClass(row.status)">{{ __(row.status || '-') }}</div>
++									<div v-if="row.remaining_refundable !== null && row.remaining_refundable !== undefined" class="mt-1 text-[10px] text-blue-600">{{ __('Refundable:') }} {{ formatAmount(row.remaining_refundable, row.currency) }}</div>
++								</div>
++							</div>
++						</div>
++					</div>
++				</template>
++
++				<!-- DAILY REPORT -->
++				<template v-else>
++					<div class="flex justify-end">
++						<button @click="loadDailyReport" :disabled="reportLoading" class="h-9 rounded-lg bg-gray-800 px-4 text-sm font-semibold text-white disabled:opacity-50">{{ reportLoading ? __('Loading...') : __('Refresh Report') }}</button>
++					</div>
++
++					<div class="flex flex-wrap justify-end gap-2">
++						<button @click="exportDailyReport('xlsx')" :disabled="dailyReport.rows.length === 0" class="rounded-lg border border-emerald-200 bg-emerald-50 px-3 py-1.5 text-xs font-semibold text-emerald-700 disabled:cursor-not-allowed disabled:opacity-40">{{ __('Export Excel') }}</button>
++						<button @click="exportDailyReport('pdf')" :disabled="dailyReport.rows.length === 0" class="rounded-lg border border-red-200 bg-red-50 px-3 py-1.5 text-xs font-semibold text-red-700 disabled:cursor-not-allowed disabled:opacity-40">{{ __('Export PDF') }}</button>
++					</div>
++
++					<div class="grid grid-cols-3 gap-2">
++						<div class="rounded-lg border border-green-200 bg-green-50 p-3 text-center"><div class="text-[10px] font-semibold uppercase text-green-700">{{ __('Payments') }}</div><div class="mt-1 text-sm sm:text-lg font-bold text-green-900">{{ formatAmount(dailyReport.payment_total, dailyReport.currency) }}</div></div>
++						<div class="rounded-lg border border-red-200 bg-red-50 p-3 text-center"><div class="text-[10px] font-semibold uppercase text-red-700">{{ __('Refunds') }}</div><div class="mt-1 text-sm sm:text-lg font-bold text-red-900">{{ formatAmount(dailyReport.refund_total, dailyReport.currency) }}</div></div>
++						<div class="rounded-lg border border-blue-200 bg-blue-50 p-3 text-center"><div class="text-[10px] font-semibold uppercase text-blue-700">{{ __('Net Collection') }}</div><div class="mt-1 text-sm sm:text-lg font-bold text-blue-900">{{ formatAmount(dailyReport.net_total, dailyReport.currency) }}</div></div>
++					</div>
++
++					<div class="grid grid-cols-1 gap-3 lg:grid-cols-2">
++						<div class="rounded-lg border border-gray-200 p-3"><div class="mb-2 text-xs font-bold text-gray-700">{{ __('By Payment Channel') }}</div><div v-for="item in dailyReport.channel_summary" :key="item.name" class="grid grid-cols-4 gap-1 border-t border-gray-100 py-1.5 text-[11px]"><div class="font-semibold text-gray-700">{{ __(item.name) }}</div><div class="text-end">{{ formatAmount(item.payments, dailyReport.currency) }}</div><div class="text-end text-red-600">-{{ formatAmount(item.refunds, dailyReport.currency) }}</div><div class="text-end font-bold">{{ formatAmount(item.net, dailyReport.currency) }}</div></div></div>
++						<div class="rounded-lg border border-gray-200 p-3"><div class="mb-2 text-xs font-bold text-gray-700">{{ __('By Provider') }}</div><div v-for="item in dailyReport.provider_summary" :key="item.name" class="grid grid-cols-4 gap-1 border-t border-gray-100 py-1.5 text-[11px]"><div class="font-semibold text-gray-700">{{ item.name }}</div><div class="text-end">{{ formatAmount(item.payments, dailyReport.currency) }}</div><div class="text-end text-red-600">-{{ formatAmount(item.refunds, dailyReport.currency) }}</div><div class="text-end font-bold">{{ formatAmount(item.net, dailyReport.currency) }}</div></div></div>
++					</div>
++
++					<div v-if="reportLoading && dailyReport.rows.length === 0" class="py-8 text-center text-sm text-gray-500">{{ __('Loading report...') }}</div>
++					<div v-else-if="dailyReport.rows.length === 0" class="rounded-lg border border-dashed border-gray-300 py-8 text-center text-sm text-gray-500">{{ __('No paid/refund transactions for this period') }}</div>
++					<div v-else class="max-h-[38vh] overflow-y-auto rounded-lg border border-gray-200">
++						<div v-for="(row, index) in dailyReport.rows" :key="historyKey(row, index)" class="grid grid-cols-[1fr_auto] gap-2 border-b border-gray-100 p-2 text-xs last:border-b-0">
++							<div><div class="font-semibold text-gray-800">{{ row.return_invoice || row.invoice }} · {{ __(row.transaction_type) }}</div><div class="text-[10px] text-gray-500">{{ row.mode_of_payment }}<span v-if="row.provider"> · {{ row.provider }}</span> · {{ row.customer_name || row.customer || '-' }}</div></div>
++							<div class="text-end"><div :class="row.transaction_type === 'Refund' ? 'text-red-600' : 'text-green-700'" class="font-bold">{{ row.transaction_type === 'Refund' ? '-' : '' }}{{ formatAmount(row.amount, row.currency) }}</div><div class="text-[10px] text-gray-500">{{ __(row.status) }}</div></div>
++						</div>
++					</div>
++				</template>
++			</div>
++		</template>
++	</Dialog>
++</template>
++
++<script setup>
++import { Dialog } from "frappe-ui"
++import { computed, onUnmounted, ref, watch } from "vue"
++import { call } from "@/utils/apiWrapper"
++import { useToast } from "@/composables/useToast"
++
++const props = defineProps({
++	modelValue: Boolean,
++	posProfile: { type: String, default: null },
++	posOpeningShift: { type: String, default: null },
++	paymentHubConfig: { type: Object, default: null },
++})
++
++const emit = defineEmits(["update:modelValue", "completed", "counts-updated"])
++const { showSuccess, showWarning } = useToast()
++
++const show = computed({
++	get: () => props.modelValue,
++	set: (value) => emit("update:modelValue", value),
++})
++
++const views = [
++	{ key: "Queues", label: "Sales Queues" },
++	{ key: "History", label: "Transaction History" },
++	{ key: "Daily", label: "Daily Report" },
++]
++const queueTabs = [
++	{ key: "Waiting", label: "Waiting", countKey: "waiting", activeClass: "border-amber-400 bg-amber-50 text-amber-700" },
++	{ key: "Paid", label: "Paid", countKey: "paid", activeClass: "border-green-400 bg-green-50 text-green-700" },
++	{ key: "Failed", label: "Failed", countKey: "failed", activeClass: "border-red-400 bg-red-50 text-red-700" },
++]
++
++const activeView = ref("Queues")
++const activeQueue = ref("Waiting")
++const queueRows = ref([])
++const counts = ref({ waiting: 0, paid: 0, failed: 0 })
++const loading = ref(false)
++const actionName = ref(null)
++const queueSearch = ref("")
++const historySearch = ref("")
++const historyRows = ref([])
++const historyLoading = ref(false)
++const reportLoading = ref(false)
++const dailyReport = ref(emptyDailyReport())
++const scopeContext = ref({ can_view_all_profiles: false, profiles: [], today: localDateValue(), yesterday: localDateValue() })
++const selectedProfile = ref(props.posProfile || "")
++const selectedScope = ref("Today")
++const customFromDate = ref(localDateValue())
++const customToDate = ref(localDateValue())
++const draftPrintType = ref("Receipt")
++const scopeLoading = ref(false)
++let refreshTimer = null
++
++function emptyDailyReport() {
++	return { currency: "KWD", payment_total: 0, refund_total: 0, net_total: 0, channel_summary: [], provider_summary: [], rows: [] }
++}
++
++function localDateValue() {
++	const date = new Date()
++	const pad = (value) => String(value).padStart(2, "0")
++	return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}`
++}
++
++const recoveryHours = computed(() => Number(props.paymentHubConfig?.pending_sale_retention_hours || 24))
++const showScopeFilter = computed(() => !(activeView.value === "Queues" && activeQueue.value === "Waiting"))
++const showCustomDates = computed(() => showScopeFilter.value && selectedScope.value === "Custom Date Range")
++const scopeOptions = computed(() => {
++	const options = []
++	if (scopeContext.value?.current_shift?.name && selectedProfile.value) options.push("Current Shift")
++	if (scopeContext.value?.last_shift?.name && selectedProfile.value) options.push("Last Shift")
++	options.push("Today", "Yesterday", "Custom Date Range")
++	return options
++})
++const scopeDescription = computed(() => {
++	if (selectedScope.value === "Current Shift") {
++		const shift = scopeContext.value?.current_shift
++		return shift?.name ? `${shift.name}${shift.business_date ? ` · ${shift.business_date}` : ""}` : __("Current Shift")
++	}
++	if (selectedScope.value === "Last Shift") {
++		const shift = scopeContext.value?.last_shift
++		return shift?.name ? `${shift.name}${shift.business_date ? ` · ${shift.business_date}` : ""}` : __("Last Shift")
++	}
++	if (selectedScope.value === "Today") return scopeContext.value?.today || localDateValue()
++	if (selectedScope.value === "Yesterday") return scopeContext.value?.yesterday || localDateValue()
++	return `${customFromDate.value} → ${customToDate.value}`
++})
++
++function scopeFilterArgs() {
++	const args = {
++		pos_profile: selectedProfile.value === "__all__" ? null : (selectedProfile.value || null),
++		current_pos_profile: props.posProfile || null,
++	}
++	if (selectedScope.value === "Current Shift" && scopeContext.value?.current_shift?.name) {
++		args.pos_opening_shift = scopeContext.value.current_shift.name
++	} else if (selectedScope.value === "Last Shift" && scopeContext.value?.last_shift?.name) {
++		args.pos_opening_shift = scopeContext.value.last_shift.name
++	} else if (selectedScope.value === "Today") {
++		args.from_date = scopeContext.value?.today || localDateValue()
++		args.to_date = args.from_date
++	} else if (selectedScope.value === "Yesterday") {
++		args.from_date = scopeContext.value?.yesterday || localDateValue()
++		args.to_date = args.from_date
++	} else if (selectedScope.value === "Custom Date Range") {
++		args.from_date = customFromDate.value || null
++		args.to_date = customToDate.value || customFromDate.value || null
++	}
++	return args
++}
++
++async function loadScopeContext(resetScope = false) {
++	scopeLoading.value = true
++	try {
++		const result = await call("erpnext_payment_hub.pos.api.get_payment_hub_pos_context", {
++			current_pos_profile: props.posProfile || null,
++			current_pos_opening_shift: props.posOpeningShift || null,
++			selected_pos_profile: selectedProfile.value || null,
++		})
++		const context = unwrapPaymentHubResult(result) || {}
++		scopeContext.value = context
++		if (context.selected_pos_profile !== undefined && context.selected_pos_profile !== null) {
++			selectedProfile.value = context.selected_pos_profile
++		}
++		if (!context.can_view_all_profiles && !selectedProfile.value) selectedProfile.value = props.posProfile || ""
++		if (resetScope || !scopeOptions.value.includes(selectedScope.value)) {
++			selectedScope.value = context.default_scope || "Today"
++		}
++		customFromDate.value = context.today || localDateValue()
++		customToDate.value = context.today || localDateValue()
++		const configured = props.paymentHubConfig?.default_draft_print_type
++		draftPrintType.value = configured === "A4" ? "A4" : "Receipt"
++	} catch (error) {
++		scopeContext.value = { can_view_all_profiles: false, profiles: [], today: localDateValue(), yesterday: localDateValue() }
++		selectedProfile.value = props.posProfile || ""
++		selectedScope.value = props.posOpeningShift ? "Current Shift" : "Today"
++	} finally {
++		scopeLoading.value = false
++	}
++}
++
++async function handleProfileChange() {
++	if (selectedProfile.value === "__all__") selectedScope.value = "Today"
++	await loadScopeContext(true)
++	await refreshActiveView()
++}
++
++async function handleScopeChange() {
++	await refreshActiveView()
++}
++
++async function refreshActiveView() {
++	if (!show.value || scopeLoading.value) return
++	if (activeView.value === "Queues") await refreshQueues()
++	else if (activeView.value === "History") await loadHistory()
++	else await loadDailyReport()
++}
++
++function unwrapPaymentHubResult(result) {
++	return result?.message ?? result
++}
++
++function paymentHubErrorMessage(error, fallback) {
++	const candidates = []
++	if (error?.message) candidates.push(error.message)
++	if (error?.exc) candidates.push(error.exc)
++	if (error?._server_messages) {
++		try {
++			const messages = JSON.parse(error._server_messages)
++			for (const item of messages || []) {
++				try {
++					const parsed = typeof item === "string" ? JSON.parse(item) : item
++					if (parsed?.message) candidates.unshift(parsed.message)
++				} catch {
++					if (item) candidates.unshift(String(item))
++				}
++			}
++		} catch {
++			candidates.unshift(String(error._server_messages))
++		}
++	}
++	const message = candidates.find((value) => String(value || "").trim())
++	return message ? String(message).replace(/<[^>]+>/g, " ").replace(/\\s+/g, " ").trim() : fallback
++}
++
++function formatAmount(value, currency = "KWD") {
++	return `${currency || "KWD"} ${Number(value || 0).toFixed(3)}`
++}
++
++function formatDateTime(value) {
++	if (!value) return ""
++	const parsed = new Date(String(value).replace(" ", "T"))
++	return Number.isNaN(parsed.getTime()) ? String(value) : parsed.toLocaleString()
++}
++
++function statusClass(status) {
++	const normalized = String(status || "").toLowerCase()
++	if (["ready to complete", "completed", "captured", "refunded", "paid", "delivered", "read"].includes(normalized)) return "text-green-600"
++	if (["failed", "expired", "cancelled", "manual review"].includes(normalized)) return "text-red-600"
++	return "text-amber-600"
++}
++
++function historyTypeClass(type) {
++	if (type === "Refund") return "bg-red-100 text-red-700"
++	if (type === "Pending Payment") return "bg-amber-100 text-amber-700"
++	return "bg-green-100 text-green-700"
++}
++
++function historyKey(row, index) {
++	return `${row.transaction_type}-${row.refund_allocation || row.source_allocation || row.gateway_transaction || row.return_invoice || row.invoice || row.session || index}-${index}`
++}
++
++async function loadCounts() {
++	const result = await call("erpnext_payment_hub.pos.api.get_sales_queue_counts", {
++		...scopeFilterArgs(),
++		current_pos_opening_shift: props.posOpeningShift || null,
++	})
++	counts.value = unwrapPaymentHubResult(result) || { waiting: 0, paid: 0, failed: 0 }
++	emit("counts-updated", counts.value)
++}
++
++async function loadQueueRows() {
++	const result = await call("erpnext_payment_hub.pos.api.get_sales_queue", {
++		queue: activeQueue.value,
++		...scopeFilterArgs(),
++		current_pos_opening_shift: props.posOpeningShift || null,
++		search: queueSearch.value || null,
++		limit: 100,
++	})
++	queueRows.value = unwrapPaymentHubResult(result)?.rows || []
++}
++
++async function refreshQueues() {
++	loading.value = true
++	try {
++		await Promise.all([loadCounts(), loadQueueRows()])
++	} catch (error) {
++		showWarning(error?.message || __("Unable to load Payment Hub sales"))
++	} finally {
++		loading.value = false
++	}
++}
++
++async function loadHistory() {
++	historyLoading.value = true
++	try {
++		const result = await call("erpnext_payment_hub.pos.reporting.search_transaction_history", {
++			search: historySearch.value || null,
++			...scopeFilterArgs(),
++			limit: 150,
++		})
++		historyRows.value = unwrapPaymentHubResult(result)?.rows || []
++	} catch (error) {
++		showWarning(error?.message || __("Unable to load transaction history"))
++	} finally {
++		historyLoading.value = false
++	}
++}
++
++async function loadDailyReport() {
++	reportLoading.value = true
++	try {
++		const result = await call("erpnext_payment_hub.pos.reporting.get_daily_transaction_report", {
++			...scopeFilterArgs(),
++		})
++		dailyReport.value = unwrapPaymentHubResult(result) || emptyDailyReport()
++	} catch (error) {
++		showWarning(error?.message || __("Unable to load daily payment/refund report"))
++	} finally {
++		reportLoading.value = false
++	}
++}
++
++function triggerPaymentHubExport(view, fileFormat, args = {}) {
++	const params = new URLSearchParams({
++		view,
++		file_format: fileFormat,
++	})
++	Object.entries(args).forEach(([key, value]) => {
++		if (value !== null && value !== undefined && String(value).trim() !== "") {
++			params.set(key, value)
++		}
++	})
++
++	const link = document.createElement("a")
++	link.href = `/api/method/erpnext_payment_hub.pos.reporting.download_transaction_export?${params.toString()}`
++	link.target = "_blank"
++	link.rel = "noopener"
++	document.body.appendChild(link)
++	link.click()
++	link.remove()
++}
++
++function exportHistory(fileFormat) {
++	triggerPaymentHubExport("history", fileFormat, {
++		search: historySearch.value || null,
++		...scopeFilterArgs(),
++	})
++}
++
++function exportDailyReport(fileFormat) {
++	triggerPaymentHubExport("daily", fileFormat, {
++		...scopeFilterArgs(),
++	})
++}
++
++async function checkPayment(row) {
++	actionName.value = row.name
++	try {
++		await call("erpnext_payment_hub.pos.api.check_session_payments", { session_name: row.name })
++		await refreshQueues()
++		showSuccess(__("Payment status refreshed"))
++	} catch (error) {
++		showWarning(paymentHubErrorMessage(error, __("Unable to refresh payment status")))
++	} finally {
++		actionName.value = null
++	}
++}
++
++async function resend(row) {
++	actionName.value = row.name
++	try {
++		let allocationName = row.electronic_allocation
++		if (!allocationName || row.electronic_status !== "Waiting") {
++			const sessionResult = await call("erpnext_payment_hub.pos.api.get_pos_session", { session_name: row.name })
++			const session = unwrapPaymentHubResult(sessionResult)
++			allocationName = (session?.allocations || []).find((item) => item.channel === "Electronic Payment" && item.status === "Waiting")?.name
++		}
++		if (!allocationName) throw new Error(__("No waiting electronic payment was found"))
++		await call("erpnext_payment_hub.pos.api.resend_payment_link", { allocation_name: allocationName })
++		showSuccess(__("Payment link sent again on WhatsApp"))
++		await refreshQueues()
++	} catch (error) {
++		showWarning(paymentHubErrorMessage(error, __("Unable to resend payment link")))
++	} finally {
++		actionName.value = null
++	}
++}
++
++async function newPaymentLink(row, sendWhatsapp) {
++	actionName.value = row.name
++	try {
++		const result = unwrapPaymentHubResult(
++			await call("erpnext_payment_hub.pos.api.create_new_payment_link", {
++				session_name: row.name,
++				send_whatsapp: sendWhatsapp ? 1 : 0,
++			}),
++		)
++		const allocation = result?.electronic_allocation
++		if (!sendWhatsapp && allocation?.payment_url) {
++			try {
++				await navigator.clipboard.writeText(allocation.payment_url)
++				showSuccess(__("New payment link created and copied"))
++			} catch {
++				showSuccess(__("New payment link created"))
++			}
++		} else {
++			showSuccess(__("New payment link created and sent on WhatsApp"))
++		}
++		activeQueue.value = "Waiting"
++		await refreshQueues()
++	} catch (error) {
++		showWarning(paymentHubErrorMessage(error, __("Unable to create a new payment link")))
++	} finally {
++		actionName.value = null
++	}
++}
++
++async function printDraft(row) {
++	actionName.value = row.name
++	const printWindow = window.open("", "_blank")
++	try {
++		const result = unwrapPaymentHubResult(
++			await call("erpnext_payment_hub.pos.api.get_pos_draft_print", {
++				session_name: row.name,
++				print_type: draftPrintType.value,
++			}),
++		)
++		const url = result?.invoice?.print_url
++		if (!url) throw new Error(__("Draft print URL is not available"))
++		if (printWindow) {
++			printWindow.location.href = url
++		} else {
++			window.open(url, "_blank")
++		}
++	} catch (error) {
++		if (printWindow) printWindow.close()
++		showWarning(paymentHubErrorMessage(error, __("Unable to print this draft")))
++	} finally {
++		actionName.value = null
++	}
++}
++
++async function completeAndPrint(row) {
++	actionName.value = row.name
++	try {
++		const callResult = await call("erpnext_payment_hub.pos.api.complete_pos_session", {
++			session_name: row.name,
++			invoice_doctype: "Sales Invoice",
++			submit: 1,
++		})
++		const result = unwrapPaymentHubResult(callResult)
++		if (!result?.invoice?.submitted) throw new Error(__("Invoice was created but not submitted"))
++		emit("completed", result)
++		showSuccess(__("Invoice {0} completed", [result.invoice.name]))
++		await refreshQueues()
++	} catch (error) {
++		showWarning(paymentHubErrorMessage(error, __("Unable to complete this sale")))
++	} finally {
++		actionName.value = null
++	}
++}
++
++function startQueueAutoRefresh() {
++	stopQueueAutoRefresh()
++	refreshTimer = window.setInterval(() => {
++		if (show.value && activeView.value === "Queues" && !loading.value) refreshQueues()
++	}, 10000)
++}
++
++function stopQueueAutoRefresh() {
++	if (refreshTimer) {
++		window.clearInterval(refreshTimer)
++		refreshTimer = null
++	}
++}
++
++watch(show, async (visible) => {
++	if (visible) {
++		await loadScopeContext(true)
++		await refreshActiveView()
++		startQueueAutoRefresh()
++	} else {
++		stopQueueAutoRefresh()
++	}
++})
++
++watch(activeQueue, () => {
++	if (show.value && activeView.value === "Queues") refreshQueues()
++})
++
++watch(activeView, (view) => {
++	if (!show.value) return
++	if (view === "Queues") refreshQueues()
++	else if (view === "History") loadHistory()
++	else loadDailyReport()
++})
++
++watch(
++	() => [props.posProfile, props.posOpeningShift],
++	async () => {
++		selectedProfile.value = props.posProfile || ""
++		if (show.value) {
++			await loadScopeContext(true)
++			await refreshActiveView()
++		}
++	},
++)
++
++onUnmounted(stopQueueAutoRefresh)
++</script>
+diff --git a/POS/src/components/sale/ReturnInvoiceDialog.vue b/POS/src/components/sale/ReturnInvoiceDialog.vue
+index 68c4c5b..328427c 100644
+--- a/POS/src/components/sale/ReturnInvoiceDialog.vue
++++ b/POS/src/components/sale/ReturnInvoiceDialog.vue
+@@ -461,6 +461,14 @@
+ 
+ 				<!-- Payment Methods Selection -->
+ 				<div v-if="selectedItems.length > 0">
++					<div v-if="paymentHubPlanLoading" class="bg-blue-50 rounded-xl p-3 border border-blue-200 mb-4 text-start text-xs text-blue-800">
++						{{ __('Checking the original payment source before allowing this return...') }}
++					</div>
++					<div v-else-if="paymentHubPlanError" class="bg-red-50 rounded-xl p-3 border border-red-200 mb-4 text-start">
++						<div class="text-sm font-bold text-red-900">{{ __('Payment Source Check Failed') }}</div>
++						<div class="text-xs text-red-700 mt-1">{{ paymentHubPlanError }}</div>
++					</div>
++
+ 					<!-- Credit Sale Return Notice -->
+ 					<div v-if="isOriginalCreditSale" class="bg-amber-50 rounded-xl p-4 border border-amber-200 mb-4 text-start">
+ 						<h4 class="text-sm font-bold text-amber-900 mb-1">{{ __('Credit Sale Return') }}</h4>
+@@ -470,7 +478,7 @@
+ 					</div>
+ 
+ 					<!-- Add to Customer Credit Option (only for non-credit sales) -->
+-					<div v-if="!isOriginalCreditSale" class="bg-emerald-50 rounded-xl p-4 border border-emerald-200 mb-4">
++					<div v-if="!isOriginalCreditSale && !paymentHubManaged" class="bg-emerald-50 rounded-xl p-4 border border-emerald-200 mb-4">
+ 						<label class="flex items-start gap-3 cursor-pointer">
+ 							<input
+ 								type="checkbox"
+@@ -519,13 +527,52 @@
+ 						</div>
+ 					</div>
+ 
++					<!-- Payment Hub refund source lock -->
++					<div v-if="paymentHubManaged && !isOriginalCreditSale" class="bg-sky-50 rounded-xl p-4 border border-sky-200 mb-4 text-start">
++						<div class="flex items-start gap-3">
++							<FeatherIcon name="shield" class="w-5 h-5 text-sky-600 flex-shrink-0 mt-0.5" />
++							<div class="flex-1">
++								<h4 class="text-sm font-bold text-sky-900">{{ __('Refund to Original Payment') }}</h4>
++								<p class="text-xs text-sky-800 mt-1">
++									{{ __('Payment Hub locks the refund to the original cash, gateway, payment method and transaction. The cashier cannot change the refund source.') }}
++								</p>
++							</div>
++						</div>
++					</div>
++
++					<div v-if="paymentHubLegacyProtected" class="rounded-xl border border-amber-300 bg-amber-50 p-3 mb-4 text-start">
++						<div class="flex items-start gap-2">
++							<FeatherIcon name="alert-triangle" class="w-4 h-4 text-amber-700 mt-0.5" />
++							<div>
++								<div class="text-xs font-bold text-amber-900">{{ __('Legacy Protected Payment') }}</div>
++								<div class="text-[11px] text-amber-800 mt-0.5">{{ __('This Electronic / Physical payment is not linked to a Payment Hub provider transaction. Direct provider refund is blocked. A manager with Refund Override permission must authorize a Cash refund.') }}</div>
++							</div>
++						</div>
++					</div>
++
++					<div v-if="paymentHubManaged && requiresManagerAuthorization" class="rounded-xl border border-violet-200 bg-violet-50 p-3 mb-4 text-start">
++						<div class="flex items-start gap-2">
++							<FeatherIcon name="lock" class="w-4 h-4 text-violet-600 mt-0.5" />
++							<div>
++								<div class="text-xs font-bold text-violet-900">{{ __('Manager / Admin Authorization Required') }}</div>
++								<div class="text-[11px] text-violet-700 mt-0.5">{{ __('Electronic and physical-terminal refunds cannot be sent until an authorized manager verifies their password.') }}</div>
++							</div>
++						</div>
++					</div>
++
++					<div v-if="hasRefundOverride" class="rounded-xl border border-orange-200 bg-orange-50 p-3 mb-4 text-start">
++						<label class="block text-xs font-bold text-orange-900 mb-1">{{ __('Refund Override Reason') }} *</label>
++						<input v-model="refundOverrideReason" type="text" class="w-full rounded-lg border border-orange-300 bg-white px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-orange-400" :placeholder="__('Why is the original payment method being overridden?')" />
++						<p class="mt-1 text-[10px] text-orange-700">{{ __('The original provider, actual cash refund, manager and reason are permanently recorded.') }}</p>
++					</div>
++
+ 					<!-- Regular Payment Methods (only for non-credit sales and not adding to customer credit) -->
+ 					<div v-if="!isOriginalCreditSale && !addToCustomerCredit">
+ 						<div class="flex flex-col sm:flex-row sm:items-center sm:justify-between mb-3 gap-2">
+ 							<label class="text-sm font-medium text-gray-700 text-start">
+ 								{{ __('Refund Payment Methods') }}
+ 							</label>
+-							<Button size="sm" variant="subtle" @click="addPaymentRow" class="self-end sm:self-auto">
++							<Button v-if="!paymentHubManaged" size="sm" variant="subtle" @click="addPaymentRow" class="self-end sm:self-auto">
+ 								<span class="text-xs">{{ __('+ Add Payment') }}</span>
+ 							</Button>
+ 						</div>
+@@ -543,7 +590,33 @@
+ 										<div class="flex-shrink-0 w-10 h-10 rounded-lg bg-gradient-to-br from-blue-50 to-indigo-100 flex items-center justify-center text-xl border border-blue-200">
+ 											{{ payment.mode_of_payment ? getPaymentIcon(payment.mode_of_payment) : '💰' }}
+ 										</div>
++										<div v-if="paymentHubManaged" class="flex-1 min-w-0 rounded-lg border border-sky-200 bg-sky-50 px-3 py-2">
++											<div class="text-sm font-semibold text-sky-900">{{ payment.mode_of_payment }}</div>
++											<div class="text-[11px] text-sky-700 truncate">
++												{{ payment.provider ? `${payment.provider}${payment.actual_payment_method ? ' • ' + payment.actual_payment_method : ''}` : payment.channel }}
++											</div>
++											<div class="text-[10px] text-sky-600 mt-0.5">
++												{{ __('Available:') }} {{ formatCurrency(payment.max_refundable || 0) }}
++											</div>
++											<div v-if="!payment.refund_supported && payment.warning && !payment.override_to_cash" class="text-[10px] text-red-600 mt-1">{{ payment.warning }}</div>
++											<div v-if="payment.override_allowed" class="mt-2 flex flex-wrap items-center gap-2">
++												<button
++													type="button"
++													@click="toggleRefundOverride(payment)"
++													:class="[
++														'rounded-md border px-2 py-1 text-[10px] font-semibold',
++														payment.override_to_cash ? 'border-orange-300 bg-orange-100 text-orange-800' : 'border-gray-300 bg-white text-gray-600 hover:bg-gray-50',
++													]"
++												>
++													{{ payment.override_to_cash ? __('Override: Refund as Cash') : __('Manager Override to Cash') }}
++												</button>
++												<span v-if="payment.override_to_cash" class="text-[10px] font-medium text-orange-700">
++													{{ __('Actual refund:') }} {{ payment.override_mode_of_payment }}
++												</span>
++											</div>
++										</div>
+ 										<select
++											v-else
+ 											v-model="payment.mode_of_payment"
+ 											:style="paymentSelectStyle"
+ 											class="payment-select flex-1 py-2.5 border border-gray-300 rounded-lg text-sm font-medium focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500 bg-white appearance-none cursor-pointer hover:border-gray-400 transition-colors ps-3 pe-10"
+@@ -557,13 +630,13 @@
+ 									<!-- Amount with Counter -->
+ 									<div class="flex items-center gap-2 flex-1">
+ 										<button
+-											@click="payment.amount = Math.max(0, (payment.amount || 0) - 1)"
++											@click="adjustRefundPayment(payment, -1)"
+ 											type="button"
+ 											class="flex-shrink-0 w-10 h-10 sm:w-9 sm:h-9 rounded-lg bg-gray-100 hover:bg-gray-200 active:bg-gray-300 text-gray-700 font-bold text-xl transition-colors flex items-center justify-center border border-gray-300"
+ 										>−</button>
+ 										<input
+ 											:value="payment.amount"
+-											@input="payment.amount = parseFloat($event.target.value) || 0"
++											@input="updateRefundPaymentAmount(payment, $event.target.value)"
+ 											@focus="$event.target.select()"
+ 											type="text"
+ 											inputmode="decimal"
+@@ -571,14 +644,14 @@
+ 											class="flex-1 min-w-0 px-3 py-2.5 text-base font-bold text-center border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500 hover:border-gray-400 transition-colors"
+ 										/>
+ 										<button
+-											@click="payment.amount = (payment.amount || 0) + 1"
++											@click="adjustRefundPayment(payment, 1)"
+ 											type="button"
+ 											class="flex-shrink-0 w-10 h-10 sm:w-9 sm:h-9 rounded-lg bg-gray-100 hover:bg-gray-200 active:bg-gray-300 text-gray-700 font-bold text-xl transition-colors flex items-center justify-center border border-gray-300"
+ 										>+</button>
+ 									</div>
+ 									<!-- Delete Button -->
+ 									<button
+-										v-if="refundPayments.length > 1"
++										v-if="refundPayments.length > 1 && !paymentHubManaged"
+ 										@click="removePaymentRow(index)"
+ 										class="hidden sm:flex flex-shrink-0 w-9 h-9 items-center justify-center text-red-500 hover:text-red-700 hover:bg-red-50 active:bg-red-100 rounded-lg transition-colors"
+ 										:title="__('Remove')"
+@@ -588,7 +661,7 @@
+ 								</div>
+ 								<!-- Mobile Delete Button -->
+ 								<button
+-									v-if="refundPayments.length > 1"
++									v-if="refundPayments.length > 1 && !paymentHubManaged"
+ 									@click="removePaymentRow(index)"
+ 									class="sm:hidden mt-2 w-full py-2 text-sm text-red-600 hover:bg-red-50 active:bg-red-100 rounded-lg transition-colors flex items-center justify-center gap-1"
+ 								>
+@@ -675,6 +748,14 @@
+ 						<Button variant="subtle" @click="closeReturnModal" class="flex-1 sm:flex-initial">
+ 							<span class="text-sm">{{ __('Cancel') }}</span>
+ 						</Button>
++						<Button
++							v-if="paymentHubManaged && returnDraftDoc && returnRefundStatus && !returnRefundStatus.all_complete"
++							variant="subtle"
++							@click="handleCheckRefund"
++							:disabled="isSubmitting"
++						>
++							<span class="text-sm whitespace-nowrap">{{ __('Check Refund') }}</span>
++						</Button>
+ 						<Button
+ 							variant="solid"
+ 							theme="red"
+@@ -683,7 +764,7 @@
+ 							:loading="isSubmitting"
+ 							class="flex-1 sm:flex-initial"
+ 						>
+-							<span class="text-sm whitespace-nowrap">{{ __('Create Return') }}</span>
++							<span class="text-sm whitespace-nowrap">{{ paymentHubManaged ? __('Refund & Create Return') : __('Create Return') }}</span>
+ 						</Button>
+ 					</div>
+ 				</div>
+@@ -691,6 +772,36 @@
+ 		</template>
+ 	</Dialog>
+ 
++	<!-- Refund manager/admin authorization -->
++	<Dialog v-model="refundAuthDialog.visible" :options="{ title: __('Manager / Admin Authorization'), size: 'sm' }">
++		<template #body-content>
++			<div class="space-y-3">
++				<div class="rounded-lg border border-violet-200 bg-violet-50 p-3 text-xs text-violet-800">
++					{{ hasRefundOverride ? __('A refund-method override requires a user with Payment Hub Refund Override permission.') : __('Electronic / terminal refund requires a user with Payment Hub Refund Approver permission.') }}
++				</div>
++				<div>
++					<label class="block text-xs font-semibold text-gray-700 mb-1">{{ __('Manager Username / Email') }}</label>
++					<input v-model="refundAuthDialog.approver" type="text" autocomplete="username" class="w-full rounded-lg border border-gray-300 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-violet-500" />
++				</div>
++				<div>
++					<label class="block text-xs font-semibold text-gray-700 mb-1">{{ __('Password') }}</label>
++					<input v-model="refundAuthDialog.password" type="password" autocomplete="current-password" class="w-full rounded-lg border border-gray-300 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-violet-500" @keyup.enter="submitRefundAuthorization" />
++				</div>
++				<div>
++					<label class="block text-xs font-semibold text-gray-700 mb-1">{{ __('Authorization Reason') }}</label>
++					<textarea v-model="refundAuthDialog.reason" rows="2" class="w-full rounded-lg border border-gray-300 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-violet-500"></textarea>
++				</div>
++				<p v-if="refundAuthDialog.error" class="text-xs text-red-600">{{ refundAuthDialog.error }}</p>
++			</div>
++		</template>
++		<template #actions>
++			<div class="flex w-full justify-end gap-2">
++				<Button variant="subtle" :disabled="refundAuthDialog.loading" @click="cancelRefundAuthorization">{{ __('Cancel') }}</Button>
++				<Button variant="solid" theme="blue" :loading="refundAuthDialog.loading" :disabled="refundAuthDialog.loading" @click="submitRefundAuthorization">{{ __('Authorize Refund') }}</Button>
++			</div>
++		</template>
++	</Dialog>
++
+ 	<!-- Error Dialog -->
+ 	<Dialog
+ 		v-model="errorDialog.visible"
+@@ -768,7 +879,7 @@ import {
+ 	roundCurrency,
+ } from "@/utils/currency"
+ import { getInvoiceStatusColor } from "@/utils/invoice"
+-import { Button, Dialog, FeatherIcon, createResource } from "frappe-ui"
++import { Button, Dialog, FeatherIcon, call, createResource } from "frappe-ui"
+ import { computed, onMounted, onUnmounted, reactive, ref, watch } from "vue"
+ 
+ const { showSuccess, showError, showWarning } = useToast()
+@@ -818,6 +929,25 @@ const isSubmitting = ref(false)
+ // When true, return amount is added to customer credit balance instead of cash refund
+ const addToCustomerCredit = ref(false)
+ 
++// Payment Hub return/refund state
++const paymentHubPlan = ref(null)
++const paymentHubPlanLoading = ref(false)
++const paymentHubPlanError = ref("")
++const returnDraftDoc = ref(null)
++const returnRefundStatus = ref(null)
++const refundOverrideReason = ref("")
++let refundAuthResolve = null
++const refundAuthDialog = reactive({
++	visible: false,
++	loading: false,
++	approver: "",
++	password: "",
++	reason: "",
++	error: "",
++	returnInvoice: null,
++	refundLines: [],
++})
++
+ // Autocomplete state
+ const invoiceSearchInput = ref(null)
+ const showSuggestions = ref(false)
+@@ -1006,6 +1136,10 @@ const fetchInvoiceResource = createResource({
+ 
+ 			// Set up refund payment rows based on original invoice payments
+ 			initializePaymentsFromInvoice()
++
++			// If this invoice was finalized through Payment Hub, replace the editable
++			// refund methods with the original locked payment sources.
++			loadPaymentHubRefundPlan()
+ 		}
+ 	},
+ 	onError(error) {
+@@ -1239,13 +1373,18 @@ const creditAdjustmentAmount = computed(() =>
+ const showPartialBreakdown = computed(
+ 	() => isPartiallyPaid.value && !isOriginalCreditSale.value,
+ )
+-const summaryRefundLabel = computed(() =>
+-	showPartialBreakdown.value ? "Cash Refund:" : "Refund Amount:",
+-)
++const summaryRefundLabel = computed(() => {
++	if (paymentHubManaged.value) return "Refund to Original Payment:"
++	return showPartialBreakdown.value ? "Cash Refund:" : "Refund Amount:"
++})
+ const summaryRefundAmount = computed(() =>
+ 	showPartialBreakdown.value ? maxRefundableAmount.value : returnTotal.value,
+ )
+ 
++watch(summaryRefundAmount, () => {
++	if (paymentHubManaged.value) applyPaymentHubRefundAmounts()
++})
++
+ // Cache RTL direction check (only needs to run once per session)
+ const isRTL = document.documentElement.dir === "rtl"
+ const paymentSelectStyle = {
+@@ -1255,10 +1394,19 @@ const paymentSelectStyle = {
+ const canCreateReturn = computed(() => {
+ 	const hasSelectedItems = selectedItems.value.length > 0
+ 	if (!hasSelectedItems || !hasOpenShift.value) return false
++	if (paymentHubPlanLoading.value || paymentHubPlanError.value) return false
+ 	// Credit sale returns and "add to customer credit" returns don't need payment validation
+ 	if (isOriginalCreditSale.value || addToCustomerCredit.value) return true
+ 
+ 	const payments = refundPayments.value
++	if (paymentHubManaged.value) {
++		const active = payments.filter((payment) => Number(payment.amount || 0) > 0)
++		if (!active.length) return false
++		if (active.some((payment) => !payment.refund_supported && !payment.override_to_cash)) return false
++		if (active.some((payment) => Number(payment.amount || 0) > Number(payment.max_refundable || 0) + 0.0005)) return false
++		if (hasRefundOverride.value && !refundOverrideReason.value.trim()) return false
++		return Math.abs(totalPaymentAmount.value - summaryRefundAmount.value) < 0.01
++	}
+ 	if (isPartiallyPaid.value) {
+ 		if (!payments.length) return true
+ 		const hasValidPayments = payments.every(
+@@ -1420,13 +1568,28 @@ function validateSelectedItems() {
+ }
+ 
+ function addPaymentRow() {
++	if (paymentHubManaged.value) return
+ 	refundPayments.value.push({ mode_of_payment: "", amount: 0 })
+ }
+ 
+ function removePaymentRow(paymentIndex) {
++	if (paymentHubManaged.value) return
+ 	refundPayments.value.splice(paymentIndex, 1)
+ }
+ 
++function updateRefundPaymentAmount(payment, value) {
++	let amount = Number.parseFloat(value) || 0
++	amount = Math.max(0, amount)
++	if (paymentHubManaged.value) {
++		amount = Math.min(amount, Number(payment.max_refundable || 0))
++	}
++	payment.amount = roundCurrency(amount)
++}
++
++function adjustRefundPayment(payment, delta) {
++	updateRefundPaymentAmount(payment, (Number(payment.amount) || 0) + delta)
++}
++
+ /**
+  * Cross-branch return — frontend safety net (Layer 2).
+  *
+@@ -1449,6 +1612,10 @@ function removePaymentRow(paymentIndex) {
+  * value, so this remap also ensures the dropdown works correctly.
+  */
+ function initializePaymentsFromInvoice() {
++	if (paymentHubManaged.value) {
++		initializePaymentHubRefunds()
++		return
++	}
+ 	if (isOriginalCreditSale.value) {
+ 		refundPayments.value = []
+ 		return
+@@ -1482,6 +1649,93 @@ function initializePaymentsFromInvoice() {
+ 	}
+ }
+ 
++const paymentHubLegacyProtected = computed(() => Boolean(paymentHubPlan.value?.legacy_protected))
++const paymentHubManaged = computed(() => Boolean(paymentHubPlan.value?.managed || paymentHubPlan.value?.legacy_protected))
++const hasRefundOverride = computed(() => refundPayments.value.some((payment) => payment.override_to_cash && Number(payment.amount || 0) > 0))
++const requiresManagerAuthorization = computed(() =>
++	refundPayments.value.some(
++		(payment) => Number(payment.amount || 0) > 0 && (payment.authorization_required || payment.override_to_cash),
++	),
++)
++
++function toggleRefundOverride(payment) {
++	if (!payment.override_allowed) return
++	payment.override_to_cash = !payment.override_to_cash
++	if (payment.override_to_cash) {
++		const target = payment.override_targets?.[0]
++		payment.override_mode_of_payment = target?.mode_of_payment || "Cash"
++	}
++}
++
++function effectiveRefundMode(payment) {
++	return payment.override_to_cash ? payment.override_mode_of_payment : payment.mode_of_payment
++}
++
++async function loadPaymentHubRefundPlan() {
++	paymentHubPlan.value = null
++	paymentHubPlanLoading.value = true
++	paymentHubPlanError.value = ""
++	returnDraftDoc.value = null
++	returnRefundStatus.value = null
++	if (!originalInvoice.value?.name) {
++		paymentHubPlanLoading.value = false
++		return
++	}
++
++	try {
++		const result = await call(
++			"erpnext_payment_hub.pos.refund.get_refund_plan",
++			{ original_invoice: originalInvoice.value.name },
++		)
++		if (result?.managed || result?.legacy_protected) {
++			paymentHubPlan.value = result
++			addToCustomerCredit.value = false
++			initializePaymentHubRefunds()
++		}
++	} catch (error) {
++		console.error("Payment Hub refund plan check failed", error)
++		paymentHubPlanError.value = extractErrorMessage(
++			error,
++			__("Unable to verify the original payment source. Return is blocked for safety."),
++		)
++	} finally {
++		paymentHubPlanLoading.value = false
++	}
++}
++
++function initializePaymentHubRefunds() {
++	if (!paymentHubPlan.value?.managed && !paymentHubPlan.value?.legacy_protected) return
++	refundPayments.value = (paymentHubPlan.value.sources || []).map((source) => ({
++		mode_of_payment: source.mode_of_payment,
++		amount: 0,
++		source_allocation: source.source_allocation,
++		channel: source.channel,
++		provider_account: source.provider_account,
++		provider: source.provider,
++		actual_payment_method: source.actual_payment_method,
++		gateway_transaction: source.gateway_transaction,
++		max_refundable: Number(source.refundable_amount || 0),
++		refund_supported: source.refund_supported !== false,
++		authorization_required: source.authorization_required === true,
++		override_allowed: source.override_allowed === true,
++		override_targets: source.override_targets || [],
++		override_to_cash: false,
++		override_mode_of_payment: source.override_targets?.[0]?.mode_of_payment || "Cash",
++		warning: source.warning || null,
++	}))
++	applyPaymentHubRefundAmounts()
++}
++
++function applyPaymentHubRefundAmounts() {
++	if (!paymentHubManaged.value) return
++	let remaining = Number(summaryRefundAmount.value || 0)
++	for (const payment of refundPayments.value) {
++		const maxAmount = Number(payment.max_refundable || 0)
++		payment.amount = roundCurrency(Math.min(maxAmount, Math.max(remaining, 0)))
++		remaining = roundCurrency(Math.max(0, remaining - payment.amount))
++	}
++}
++
+ // Resource for checking invoice return validity (defined early for use in helpers)
+ const checkInvoiceValidityResource = createResource({
+ 	url: "pos_next.api.invoices.check_invoice_return_validity",
+@@ -1621,6 +1875,254 @@ function decrementReturnQuantity(item) {
+ 	}
+ }
+ 
++function buildPaymentHubReturnInvoiceData() {
++	const baseDoc = preparedReturnDoc.value || {}
++	const invoiceData = {
++		doctype: "Sales Invoice",
++		pos_profile: props.posProfile,
++		posa_pos_opening_shift: props.posOpeningShift,
++		customer: baseDoc.customer || originalInvoice.value.customer,
++		company: baseDoc.company || originalInvoice.value.company,
++		is_return: 1,
++		return_against: baseDoc.return_against || originalInvoice.value.name,
++		update_outstanding_for_self: 0,
++		is_pos: 1,
++		update_stock: 1,
++		sales_team:
++			baseDoc.sales_team?.map((member) => ({
++				sales_person: member.sales_person,
++				allocated_percentage: member.allocated_percentage || 0,
++			})) || [],
++		items: selectedItems.value.map((item) => ({
++			item_code: item.item_code,
++			item_name: item.item_name,
++			qty: -Math.abs(item.return_qty),
++			rate: item.rate,
++			warehouse: item.warehouse,
++			uom: item.uom,
++			conversion_factor: item.conversion_factor || 1,
++			sales_invoice_item: item.name,
++		})),
++		add_to_customer_balance: false,
++		payments: refundPayments.value
++			.filter((payment) => Number(payment.amount || 0) > 0)
++			.map((payment) => ({
++				mode_of_payment: effectiveRefundMode(payment),
++				amount: -Math.abs(payment.amount),
++			})),
++		remarks: returnReason.value || __("Return against {0}", [originalInvoice.value.name]),
++	}
++	if (returnDraftDoc.value?.name) invoiceData.name = returnDraftDoc.value.name
++	return invoiceData
++}
++
++function finishReturnSuccess(data) {
++	submitError.value = ""
++	emit("return-created", data)
++	loadInvoicesResource.reload()
++	closeReturnModal()
++	showSuccess(__("Return invoice {0} created successfully", [data.name]))
++}
++
++async function submitPaymentHubReturnDraft() {
++	if (!returnDraftDoc.value?.name) throw new Error(__("Return draft is missing"))
++	const result = await call("pos_next.api.invoices.submit_invoice", {
++		invoice: JSON.stringify(returnDraftDoc.value),
++		data: JSON.stringify({}),
++	})
++	finishReturnSuccess(result)
++	return result
++}
++
++function cancelRefundAuthorization() {
++	refundAuthDialog.visible = false
++	refundAuthDialog.loading = false
++	refundAuthDialog.password = ""
++	refundAuthDialog.error = ""
++	const resolve = refundAuthResolve
++	refundAuthResolve = null
++	resolve?.(null)
++}
++
++async function submitRefundAuthorization() {
++	if (refundAuthDialog.loading) return
++	if (!refundAuthDialog.approver || !refundAuthDialog.password || !refundAuthDialog.reason.trim()) {
++		refundAuthDialog.error = __("Manager username, password and reason are required")
++		return
++	}
++	refundAuthDialog.loading = true
++	refundAuthDialog.error = ""
++	try {
++		const overridePayment = refundAuthDialog.refundLines.find((line) => line.override_channel)
++		const result = await call(
++			"erpnext_payment_hub.pos.authorization.authorize_pos_refund",
++			{
++				approver: refundAuthDialog.approver,
++				password: refundAuthDialog.password,
++				original_invoice: originalInvoice.value.name,
++				return_invoice: refundAuthDialog.returnInvoice,
++				amount: roundCurrency(refundAuthDialog.refundLines.reduce((sum, line) => sum + Number(line.amount || 0), 0)),
++				reason: refundAuthDialog.reason.trim(),
++				source_allocations: JSON.stringify(refundAuthDialog.refundLines.map((line) => line.source_allocation)),
++				is_override: hasRefundOverride.value ? 1 : 0,
++				override_channel: overridePayment?.override_channel || null,
++				override_mode_of_payment: overridePayment?.override_mode_of_payment || null,
++			},
++		)
++		refundAuthDialog.visible = false
++		refundAuthDialog.password = ""
++		const resolve = refundAuthResolve
++		refundAuthResolve = null
++		resolve?.(result?.authorization_token || null)
++	} catch (error) {
++		refundAuthDialog.password = ""
++		refundAuthDialog.error = extractErrorMessage(error, __("Authorization failed"))
++	} finally {
++		refundAuthDialog.loading = false
++	}
++}
++
++function requestRefundAuthorization(returnInvoice, refundLines) {
++	if (!requiresManagerAuthorization.value) return Promise.resolve(null)
++	refundAuthDialog.returnInvoice = returnInvoice
++	refundAuthDialog.refundLines = refundLines
++	refundAuthDialog.password = ""
++	refundAuthDialog.error = ""
++	refundAuthDialog.reason = refundOverrideReason.value.trim() || returnReason.value.trim() || __("POS customer return")
++	refundAuthDialog.visible = true
++	return new Promise((resolve) => {
++		refundAuthResolve = resolve
++	})
++}
++
++watch(
++	() => refundAuthDialog.visible,
++	(visible) => {
++		if (!visible && refundAuthResolve && !refundAuthDialog.loading) {
++			const resolve = refundAuthResolve
++			refundAuthResolve = null
++			refundAuthDialog.password = ""
++			resolve(null)
++		}
++	},
++)
++
++async function handleLegacyProtectedReturn() {
++	if (!hasRefundOverride.value) {
++		throw new Error(__("This legacy Electronic / Physical payment requires a manager-authorized Cash override."))
++	}
++
++	const invoiceData = buildPaymentHubReturnInvoiceData()
++	const draft = await call("pos_next.api.invoices.update_invoice", {
++		data: JSON.stringify(invoiceData),
++	})
++	returnDraftDoc.value = draft
++
++	const refundLines = refundPayments.value
++		.filter((payment) => Number(payment.amount || 0) > 0)
++		.map((payment) => ({
++			source_allocation: payment.source_allocation,
++			amount: roundCurrency(payment.amount),
++			override_channel: "Cash",
++			override_mode_of_payment: payment.override_mode_of_payment || "Cash",
++			override_reason: refundOverrideReason.value.trim(),
++		}))
++
++	const authorizationToken = await requestRefundAuthorization(draft.name, refundLines)
++	if (!authorizationToken) {
++		showWarning(__("Return was not submitted. Manager Refund Override authorization is required."))
++		return { authorization_required: true, return_invoice: draft.name }
++	}
++
++	// No provider transaction exists for this legacy invoice. The password-verified
++	// authorization audit record is validated again by Payment Hub's Sales Invoice
++	// before_submit hook, which blocks direct API bypasses.
++	return await submitPaymentHubReturnDraft()
++}
++
++async function handlePaymentHubReturn() {
++	if (paymentHubLegacyProtected.value) {
++		return await handleLegacyProtectedReturn()
++	}
++
++	const invoiceData = buildPaymentHubReturnInvoiceData()
++	const draft = await call("pos_next.api.invoices.update_invoice", {
++		data: JSON.stringify(invoiceData),
++	})
++	returnDraftDoc.value = draft
++
++	const refundLines = refundPayments.value
++		.filter((payment) => Number(payment.amount || 0) > 0)
++		.map((payment) => ({
++			source_allocation: payment.source_allocation,
++			amount: roundCurrency(payment.amount),
++			override_channel: payment.override_to_cash ? "Cash" : null,
++			override_mode_of_payment: payment.override_to_cash ? payment.override_mode_of_payment : null,
++			override_reason: payment.override_to_cash ? refundOverrideReason.value.trim() : null,
++		}))
++
++	let authorizationToken = null
++	if (requiresManagerAuthorization.value) {
++		authorizationToken = await requestRefundAuthorization(draft.name, refundLines)
++		if (!authorizationToken) {
++			showWarning(__("Refund was not sent. Manager authorization is required."))
++			return { authorization_required: true, return_invoice: draft.name }
++		}
++	}
++
++	const status = await call(
++		"erpnext_payment_hub.pos.refund.process_pos_return_refund",
++		{
++			original_invoice: originalInvoice.value.name,
++			return_invoice: draft.name,
++			refund_lines: JSON.stringify(refundLines),
++			reason: returnReason.value || "POS customer return",
++			authorization_token: authorizationToken,
++		},
++	)
++	returnRefundStatus.value = status
++
++	if (status?.all_complete) {
++		return await submitPaymentHubReturnDraft()
++	}
++
++	if (status?.needs_review) {
++		throw new Error(
++			__("Refund could not be confirmed. Return invoice {0} remains Draft. Review the Payment Hub refund before retrying.", [draft.name]),
++		)
++	}
++
++	showWarning(
++		__("Refund is pending with the payment provider. Return invoice {0} remains Draft. Use Check Refund to continue after confirmation.", [draft.name]),
++	)
++	return status
++}
++
++async function handleCheckRefund() {
++	if (!returnDraftDoc.value?.name || isSubmitting.value) return
++	isSubmitting.value = true
++	try {
++		const status = await call(
++			"erpnext_payment_hub.pos.refund.refresh_return_refunds",
++			{ return_invoice: returnDraftDoc.value.name },
++		)
++		returnRefundStatus.value = status
++		if (status?.all_complete) {
++			await submitPaymentHubReturnDraft()
++		} else if (status?.needs_review) {
++			openErrorDialog(__("Refund requires manual review before the return can be submitted."), __("Refund Review Required"))
++		} else {
++			showWarning(__("Refund is still pending with the payment provider."))
++		}
++	} catch (error) {
++		const errorMsg = extractErrorMessage(error)
++		submitError.value = errorMsg
++		openErrorDialog(errorMsg)
++	} finally {
++		isSubmitting.value = false
++	}
++}
++
+ async function handleCreateReturn() {
+ 	if (!canCreateReturn.value || isSubmitting.value) return
+ 	if (!hasOpenShift.value) {
+@@ -1638,6 +2140,11 @@ async function handleCreateReturn() {
+ 	isSubmitting.value = true
+ 
+ 	try {
++		if (paymentHubManaged.value) {
++			await handlePaymentHubReturn()
++			return
++		}
++
+ 		const result = await createReturnResource.submit()
+ 
+ 		// Check if result contains an error (HTTP 417 might return error in response body)
+@@ -1663,6 +2170,22 @@ function resetForm() {
+ 	returnItems.value = []
+ 	returnReason.value = ""
+ 	refundPayments.value = []
++	addToCustomerCredit.value = false
++	paymentHubPlan.value = null
++	paymentHubPlanLoading.value = false
++	paymentHubPlanError.value = ""
++	returnDraftDoc.value = null
++	returnRefundStatus.value = null
++	refundOverrideReason.value = ""
++	refundAuthDialog.visible = false
++	refundAuthDialog.loading = false
++	refundAuthDialog.approver = ""
++	refundAuthDialog.password = ""
++	refundAuthDialog.reason = ""
++	refundAuthDialog.error = ""
++	refundAuthDialog.returnInvoice = null
++	refundAuthDialog.refundLines = []
++	refundAuthResolve = null
+ 
+ 	// Reset list and search state
+ 	invoiceList.value = []
+diff --git a/POS/src/pages/POSSale.vue b/POS/src/pages/POSSale.vue
+index 5e8cab6..0551642 100644
+--- a/POS/src/pages/POSSale.vue
++++ b/POS/src/pages/POSSale.vue
+@@ -19,6 +19,10 @@
+ 				:is-offline="offlineStore.isOffline"
+ 				:is-syncing="offlineStore.isSyncing"
+ 				:pending-invoices-count="offlineStore.pendingInvoicesCount"
++				:payment-hub-enabled="Boolean(paymentHubConfig)"
++				:payment-hub-pending-count="paymentHubQueueCounts.waiting"
++				:payment-hub-paid-count="paymentHubQueueCounts.paid"
++				:payment-hub-failed-count="paymentHubQueueCounts.failed"
+ 				:is-any-dialog-open="uiStore.isAnyDialogOpen"
+ 				:cache-syncing="itemStore.cacheSyncing"
+ 				:cache-stats="itemStore.cacheStats"
+@@ -30,6 +34,7 @@
+ 				@printer-click="openHistoryDialog"
+ 				@refresh-click="handleRefresh"
+ 				@clear-cache="handleClearCache"
++				@payment-hub-click="showPaymentHubPendingDialog = true"
+ 				@logout="uiStore.showLogoutDialog = true"
+ 			>
+ 				<template #menu-items>
+@@ -499,10 +504,20 @@
+ 			:discount-amount="cartStore.totalDiscount"
+ 			:target-doctype="cartStore.targetDoctype"
+ 			:is-submitting="cartStore.isSubmitting"
++			:payment-hub-config="paymentHubConfig"
+ 			@payment-completed="handlePaymentCompleted"
+ 			@update-additional-discount="handleAdditionalDiscountUpdate"
+ 		/>
+ 
++		<PaymentHubPendingDialog
++			v-model="showPaymentHubPendingDialog"
++			:pos-profile="shiftStore.profileName"
++			:pos-opening-shift="shiftStore.currentShift?.name"
++			:payment-hub-config="paymentHubConfig"
++			@counts-updated="handlePaymentHubCountsUpdated"
++			@completed="handlePaymentHubCompleted"
++		/>
++
+ 			<!-- Customer Selection Dialog -->
+ 			<CustomerDialog
+ 				v-model="uiStore.showCustomerDialog"
+@@ -1011,6 +1026,7 @@ import ItemsSelector from "@/components/sale/ItemsSelector.vue";
+ import OffersDialog from "@/components/sale/OffersDialog.vue";
+ import OfflineInvoicesDialog from "@/components/sale/OfflineInvoicesDialog.vue";
+ import PaymentDialog from "@/components/sale/PaymentDialog.vue";
++import PaymentHubPendingDialog from "@/components/sale/PaymentHubPendingDialog.vue";
+ import PromotionManagement from "@/components/sale/PromotionManagement.vue";
+ import ReturnInvoiceDialog from "@/components/sale/ReturnInvoiceDialog.vue";
+ import WarehouseAvailabilityDialog from "@/components/sale/WarehouseAvailabilityDialog.vue";
+@@ -1101,6 +1117,14 @@ const editCustomer = ref(null); // Customer being edited (null for create mode)
+ const showClearCacheDialog = ref(false);
+ const clearCacheOverlayRef = ref(null);
+ 
++// Payment Hub POSNext adapter state
++const paymentHubConfig = ref(null);
++const paymentHubQueueCounts = ref({ waiting: 0, paid: 0, failed: 0 });
++const showPaymentHubPendingDialog = ref(false);
++const paymentHubCartReference = ref(null);
++const paymentHubCartFingerprint = ref(null);
++let paymentHubPollTimer = null;
++
+ // Debounce timer for offer reapplication
+ const offerReapplyTimer = ref(null);
+ 
+@@ -1979,6 +2003,241 @@ async function handleErrorRetry() {
+ 	}
+ }
+ 
++function unwrapPaymentHubResult(result) {
++	return result?.message ?? result;
++}
++
++function normalizePaymentHubMode(value) {
++	return String(value || "").trim().toLowerCase();
++}
++
++function getPaymentHubModes() {
++	return {
++		cash: paymentHubConfig.value?.cash_mode_of_payment || "Cash",
++		electronic:
++			paymentHubConfig.value?.electronic_mode_of_payment || "Electronic Payment",
++		physical:
++			paymentHubConfig.value?.physical_mode_of_payment || "Physical Payment Terminal",
++	};
++}
++
++function isPaymentHubElectronicMode(value) {
++	const modes = getPaymentHubModes();
++	const normalized = normalizePaymentHubMode(value);
++	return (
++		normalized === normalizePaymentHubMode(modes.electronic) ||
++		normalized === "electronic payment"
++	);
++}
++
++function isPaymentHubPhysicalMode(value) {
++	const modes = getPaymentHubModes();
++	const normalized = normalizePaymentHubMode(value);
++	return (
++		normalized === normalizePaymentHubMode(modes.physical) ||
++		normalized === "physical payment terminal"
++	);
++}
++
++function isPaymentHubCashMode(value) {
++	const modes = getPaymentHubModes();
++	const normalized = normalizePaymentHubMode(value);
++	return normalized === normalizePaymentHubMode(modes.cash) || normalized === "cash";
++}
++
++function buildPaymentHubFingerprint() {
++	const items = cartStore.invoiceItems.map((item) => [
++		item.item_code,
++		Number(item.quantity || item.qty || 0),
++		Number(item.rate || 0),
++		item.uom || "",
++	]);
++	return JSON.stringify({
++		customer: cartStore.customer?.name || cartStore.customer || shiftStore.profileCustomer,
++		grand_total: Number(cartStore.grandTotal || 0),
++		items,
++	});
++}
++
++function getPaymentHubCartReference() {
++	const fingerprint = buildPaymentHubFingerprint();
++	if (!paymentHubCartReference.value || paymentHubCartFingerprint.value !== fingerprint) {
++		const token =
++			globalThis.crypto?.randomUUID?.() ||
++			`${Date.now()}-${Math.random().toString(16).slice(2)}`;
++		paymentHubCartReference.value = `POSNEXT-${token}`;
++		paymentHubCartFingerprint.value = fingerprint;
++	}
++	return paymentHubCartReference.value;
++}
++
++function resetPaymentHubCartReference() {
++	paymentHubCartReference.value = null;
++	paymentHubCartFingerprint.value = null;
++}
++
++async function loadPaymentHubConfig() {
++	if (offlineStore.isOffline || !shiftStore.profileName) return;
++	try {
++		const result = await call(
++			"erpnext_payment_hub.pos.api.get_pos_payment_config",
++			{ pos_profile: shiftStore.profileName },
++		);
++		paymentHubConfig.value = unwrapPaymentHubResult(result);
++	} catch (error) {
++		paymentHubConfig.value = null;
++		log.debug("Payment Hub config unavailable:", error?.message || error);
++	}
++}
++
++async function refreshPaymentHubQueueCounts() {
++	if (!paymentHubConfig.value || offlineStore.isOffline || !shiftStore.profileName) return;
++	try {
++		const result = await call(
++			"erpnext_payment_hub.pos.api.get_sales_queue_counts",
++			{
++				pos_profile: shiftStore.profileName,
++				current_pos_profile: shiftStore.profileName,
++				pos_opening_shift: shiftStore.currentShift?.name || null,
++			},
++		);
++		paymentHubQueueCounts.value = unwrapPaymentHubResult(result) || { waiting: 0, paid: 0, failed: 0 };
++	} catch (error) {
++		log.debug("Payment Hub queue count refresh failed:", error?.message || error);
++	}
++}
++
++function handlePaymentHubCountsUpdated(counts) {
++	paymentHubQueueCounts.value = counts || { waiting: 0, paid: 0, failed: 0 };
++}
++
++function buildPaymentHubInvoicePayload(customerValue, paymentData) {
++	return {
++		doctype: "Sales Invoice",
++		pos_profile: cartStore.posProfile,
++		posa_pos_opening_shift: cartStore.posOpeningShift,
++		customer: customerValue || shiftStore.profileCustomer,
++		company: shiftStore.profileCompany,
++		currency: shiftStore.profileCurrency,
++		items: cartStore.formatItemsForSubmission(cartStore.invoiceItems),
++		payments: [],
++		sales_team: JSON.parse(JSON.stringify(paymentData.sales_team || cartStore.salesTeam || [])),
++		discount_amount: cartStore.additionalDiscount || 0,
++		coupon_code: cartStore.appliedCoupon?.name || "",
++		is_pos: 1,
++		update_stock: 1,
++	};
++}
++
++async function startPaymentHubElectronicSale(paymentData, customerValue, draftIdToDelete) {
++	if (offlineStore.isOffline) {
++		throw new Error(__("Electronic Payment requires an online connection"));
++	}
++	if (cartStore.targetDoctype !== "Sales Invoice") {
++		throw new Error(__("Payment Hub Electronic Payment currently supports Sales Invoice only"));
++	}
++	if (Number(paymentData.write_off_amount || 0) > 0) {
++		throw new Error(__("Write-off cannot be combined with asynchronous Electronic Payment"));
++	}
++
++	if (!paymentHubConfig.value) await loadPaymentHubConfig();
++	if (!paymentHubConfig.value) {
++		throw new Error(__("Payment Hub configuration is not available"));
++	}
++
++	const activePayments = (paymentData.payments || []).filter(
++		(row) => Number(row.amount || 0) > 0,
++	);
++	const physicalPayment = activePayments.find((row) =>
++		isPaymentHubPhysicalMode(row.mode_of_payment),
++	);
++	if (physicalPayment) {
++		throw new Error(
++			__("Physical Payment Terminal is not enabled in the POSNext adapter yet"),
++		);
++	}
++
++	const electronicRows = activePayments.filter((row) =>
++		isPaymentHubElectronicMode(row.mode_of_payment),
++	);
++	if (electronicRows.length === 0) return null;
++
++	const unsupported = activePayments.filter(
++		(row) =>
++			!isPaymentHubCashMode(row.mode_of_payment) &&
++			!isPaymentHubElectronicMode(row.mode_of_payment),
++	);
++	if (unsupported.length > 0) {
++		throw new Error(
++			__("Electronic Payment currently supports split payment with Cash only"),
++		);
++	}
++
++	const electronicAmount = electronicRows.reduce(
++		(sum, row) => sum + Number(row.amount || 0),
++		0,
++	);
++	const cashAmount = activePayments
++		.filter((row) => isPaymentHubCashMode(row.mode_of_payment))
++		.reduce((sum, row) => sum + Number(row.amount || 0), 0);
++
++	const cartReference = getPaymentHubCartReference();
++	const invoicePayload = buildPaymentHubInvoicePayload(customerValue, paymentData);
++	const callResult = await call(
++		"erpnext_payment_hub.pos.api.begin_async_electronic_sale",
++		{
++			pos_system: "POSNext",
++			company: shiftStore.profileCompany,
++			grand_total: cartStore.grandTotal,
++			electronic_amount: electronicAmount,
++			cash_amount: cashAmount,
++			mobile_number: paymentData.payment_hub_mobile_number,
++			draft_payload: invoicePayload,
++			currency: shiftStore.profileCurrency,
++			customer: customerValue || shiftStore.profileCustomer,
++			customer_name:
++				cartStore.customer?.customer_name || cartStore.customer?.name || customerValue,
++			pos_profile: shiftStore.profileName,
++			pos_opening_shift: shiftStore.currentShift?.name || null,
++			warehouse: shiftStore.profileWarehouse,
++			cart_reference: cartReference,
++			payment_method: "KNET",
++			idempotency_key: cartReference,
++			send_whatsapp: 1,
++		},
++	);
++	const result = unwrapPaymentHubResult(callResult);
++
++	uiStore.showPaymentDialog = false;
++	cartStore.clearCart();
++	previousCartHash = "";
++	resetPaymentHubCartReference();
++
++	if (draftIdToDelete) {
++		draftsStore.deleteDraft(draftIdToDelete);
++	}
++
++	await refreshPaymentHubQueueCounts();
++	const sessionName = result?.session?.name || __("Payment Hub sale");
++	const status = result?.session?.status;
++	if (status === "Ready to Complete") {
++		showSuccess(__("{0} is paid and ready to complete", [sessionName]));
++	} else {
++		showSuccess(__("Payment link sent. {0} moved to Waiting", [sessionName]));
++	}
++	return result;
++}
++
++async function handlePaymentHubCompleted(result) {
++	const invoice = result?.invoice;
++	if (!invoice?.name) return;
++	await refreshPaymentHubQueueCounts();
++	loadInvoiceHistoryData().catch((error) =>
++		log.debug("Payment Hub invoice history refresh failed:", error),
++	);
++	await handlePrintInvoice({ name: invoice.name });
++}
++
+ async function handlePaymentCompleted(paymentData) {
+ 	try {
+ 		const customerValue = cartStore.customer?.name || cartStore.customer;
+@@ -2020,6 +2279,24 @@ async function handlePaymentCompleted(paymentData) {
+ 		// Delete draft if it exists (since we're submitting/saving invoice)
+ 		const draftIdToDelete = cartStore.currentDraftId;
+ 
++		const hasElectronicPayment = (paymentData.payments || []).some(
++			(row) => isPaymentHubElectronicMode(row.mode_of_payment) && Number(row.amount || 0) > 0,
++		);
++		const hasPhysicalPayment = (paymentData.payments || []).some(
++			(row) => isPaymentHubPhysicalMode(row.mode_of_payment) && Number(row.amount || 0) > 0,
++		);
++
++		if (hasPhysicalPayment) {
++			throw new Error(
++				__("Physical Payment Terminal is not enabled in the POSNext adapter yet"),
++			);
++		}
++
++		if (hasElectronicPayment) {
++			await startPaymentHubElectronicSale(paymentData, customerValue, draftIdToDelete);
++			return;
++		}
++
+ 		if (offlineStore.isOffline) {
+ 			// Use the same item transformation as online flow for consistency
+ 			// This ensures rate, discount_percentage, discount_amount, and pricing_rules
+@@ -2849,4 +3126,28 @@ function handleTabSwitch(tab) {
+ 		uiStore.setMobileTab(tab);
+ 	});
+ }
++
++// Payment Hub queue badge: light polling complements the backend realtime event
++// and works even if this POS session has not opened a Socket.IO channel.
++onMounted(async () => {
++	await loadPaymentHubConfig();
++	await refreshPaymentHubQueueCounts();
++	paymentHubPollTimer = window.setInterval(refreshPaymentHubQueueCounts, 15000);
++});
++
++onUnmounted(() => {
++	if (paymentHubPollTimer) {
++		window.clearInterval(paymentHubPollTimer);
++		paymentHubPollTimer = null;
++	}
++});
++
++watch(
++	() => [shiftStore.profileName, offlineStore.isOffline],
++	async () => {
++		await loadPaymentHubConfig();
++		await refreshPaymentHubQueueCounts();
++	},
++);
++
+ </script>
