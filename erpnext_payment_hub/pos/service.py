@@ -374,7 +374,7 @@ def expire_stale_pos_payments(limit=100):
     settings = get_settings()
     if not bool(getattr(settings, "auto_expire_pending_sales", 1)):
         return
-    minutes = max(1, int(getattr(settings, "payment_link_expiry_minutes", 30) or 30))
+    minutes = max(1, int(getattr(settings, "payment_link_expiry_minutes", 1440) or 1440))
     now = now_datetime()
     cutoff = add_to_date(now, minutes=-minutes)
 

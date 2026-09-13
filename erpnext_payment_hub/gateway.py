@@ -120,6 +120,7 @@ def normalize_status(provider, raw_status):
         "ABANDONED",
         "EXPIRED",
         "TIMED_OUT",
+        "TIMEDOUT",
         "REJECTED",
         "RESTRICTED",
     }

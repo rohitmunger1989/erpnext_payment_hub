@@ -1,16 +1,28 @@
 from __future__ import annotations
 
 import frappe
-from frappe.utils import add_to_date, cint, flt, now_datetime
+from frappe.utils import add_to_date, cint, flt, get_datetime, now_datetime
 
 from erpnext_payment_hub.gateway import (
     create_gateway_transaction,
     get_provider,
+    get_provider_account,
     resolve_payment_terminal,
     resolve_pos_station,
     touch_pos_station,
     update_transaction_from_status,
 )
+from erpnext_payment_hub.pos.mapping import (
+    CHANNEL_CASH,
+    CHANNEL_MANUAL,
+    CHANNEL_ELECTRONIC,
+    CHANNEL_PHYSICAL,
+    assert_mapping_channel,
+    get_applicable_mappings,
+    provider_account_for_mapping,
+    serialize_mapping,
+)
+
 from erpnext_payment_hub.pos.scope import (
     apply_session_shift_context,
     build_scope_context,
@@ -60,6 +72,8 @@ def _session_response(session):
         "confirmed_paid_amount": flt(session.confirmed_paid_amount, 3),
         "pending_amount": flt(session.pending_amount, 3),
         "remaining_amount": flt(session.remaining_amount, 3),
+        "cash_tendered_amount": flt(getattr(session, "cash_tendered_amount", 0), 3),
+        "change_amount": flt(getattr(session, "change_amount", 0), 3),
         "invoice_doctype": session.invoice_doctype,
         "invoice_name": session.invoice_name,
         "finalized": bool(session.finalized),
@@ -136,7 +150,26 @@ def get_pos_payment_config(computer_name=None, pos_profile=None, branch=None):
     except Exception:
         pass
 
+    mapping_company = getattr(station, "company", None) if station else None
+    if not mapping_company and pos_profile and frappe.db.exists("POS Profile", pos_profile):
+        mapping_company = frappe.db.get_value("POS Profile", pos_profile, "company")
+    mapped_methods = [serialize_mapping(row) for row in get_applicable_mappings(
+        company=mapping_company,
+        pos_profile=pos_profile,
+    )]
+    for item in mapped_methods:
+        if item.get("channel") == CHANNEL_PHYSICAL and item.get("provider_account"):
+            try:
+                account = resolve_physical_account(
+                    frappe._dict({"pos_station": station.name if station else None}),
+                    item["provider_account"],
+                )
+                item["terminal_api_ready"] = hasattr(get_provider(account), "create_terminal_payment")
+            except Exception:
+                item["terminal_api_ready"] = False
+
     return {
+        "payment_method_mappings": mapped_methods,
         "cash_mode_of_payment": getattr(settings, "cash_mode_of_payment", None) or "Cash",
         "physical_mode_of_payment": getattr(settings, "physical_mode_of_payment", None) or "Physical Payment Terminal",
         "electronic_mode_of_payment": getattr(settings, "electronic_mode_of_payment", None) or "Electronic Payment",
@@ -145,7 +178,7 @@ def get_pos_payment_config(computer_name=None, pos_profile=None, branch=None):
         "whatsapp_integration": getattr(settings, "whatsapp_integration", None) or "Frappe WhatsApp",
         "async_electronic_payment": bool(getattr(settings, "async_electronic_payment", 1)),
         "after_electronic_capture": getattr(settings, "after_electronic_capture", None) or "Mark Paid Only",
-        "payment_link_expiry_minutes": int(getattr(settings, "payment_link_expiry_minutes", 30) or 30),
+        "payment_link_expiry_minutes": int(getattr(settings, "payment_link_expiry_minutes", 1440) or 1440),
         "pending_sale_retention_hours": int(getattr(settings, "pending_sale_retention_hours", 24) or 24),
         "draft_a4_print_format": getattr(settings, "draft_a4_print_format", None),
         "draft_receipt_print_format": getattr(settings, "draft_receipt_print_format", None),
@@ -309,9 +342,11 @@ def add_cash_allocation(session_name, amount, mode_of_payment=None, idempotency_
             return {"allocation": _allocation_response(existing), "session": _session_response(session)}
 
     settings = get_settings()
+    if mode_of_payment:
+        assert_mapping_channel(mode_of_payment, CHANNEL_CASH, session=session)
     allocation = create_allocation(
         session,
-        channel="Cash",
+        channel=CHANNEL_CASH,
         amount=amount,
         mode_of_payment=mode_of_payment or getattr(settings, "cash_mode_of_payment", None) or "Cash",
         status="Captured",
@@ -321,6 +356,64 @@ def add_cash_allocation(session_name, amount, mode_of_payment=None, idempotency_
     allocation.save(ignore_permissions=True)
     recalculate_session(session)
     return {"allocation": _allocation_response(allocation), "session": _session_response(session)}
+
+
+@frappe.whitelist()
+def add_manual_noncash_allocation(session_name, amount, mode_of_payment, idempotency_key=None):
+    """Record an accepted manual non-cash tender such as cheque/bank transfer.
+
+    This channel never creates change and never calls a gateway. The ERPNext Mode
+    of Payment determines the accounting account on the final Sales Invoice.
+    """
+    session = frappe.get_doc("POS Payment Session", session_name)
+    assert_open_session(session)
+    amount = assert_amount_available(session, amount)
+    assert_mapping_channel(mode_of_payment, CHANNEL_MANUAL, session=session)
+
+    if idempotency_key:
+        existing = get_existing_by_idempotency("POS Payment Allocation", idempotency_key)
+        if existing:
+            return {"allocation": _allocation_response(existing), "session": _session_response(session)}
+
+    allocation = create_allocation(
+        session,
+        channel=CHANNEL_MANUAL,
+        amount=amount,
+        mode_of_payment=mode_of_payment,
+        status="Captured",
+        idempotency_key=idempotency_key,
+    )
+    allocation.captured_at = now_datetime()
+    allocation.save(ignore_permissions=True)
+    recalculate_session(session)
+    return {"allocation": _allocation_response(allocation), "session": _session_response(session)}
+
+
+def _payment_link_lifetime_minutes(settings, account, normalized):
+    """Resolve one attempt's lifetime without hardcoding a provider duration.
+
+    A provider-reported expiry is authoritative. Otherwise an account-specific
+    fallback wins, then the global Payment Hub fallback.
+    """
+    try:
+        provider_minutes = float((normalized or {}).get("provider_expiry_minutes") or 0)
+    except (TypeError, ValueError):
+        provider_minutes = 0
+    if provider_minutes > 0:
+        return provider_minutes
+
+    try:
+        account_minutes = int(getattr(account, "payment_link_expiry_minutes", 0) or 0)
+    except (TypeError, ValueError):
+        account_minutes = 0
+    if account_minutes > 0:
+        return account_minutes
+
+    try:
+        global_minutes = int(getattr(settings, "payment_link_expiry_minutes", 1440) or 1440)
+    except (TypeError, ValueError):
+        global_minutes = 1440
+    return max(global_minutes, 1)
 
 
 @frappe.whitelist()
@@ -342,6 +435,15 @@ def create_payment_link(
             return {"allocation": _allocation_response(existing), "session": _session_response(session)}
 
     amount = assert_amount_available(session, amount)
+    mapping = assert_mapping_channel(mode_of_payment, CHANNEL_ELECTRONIC, session=session) if mode_of_payment else None
+    mapped_account = provider_account_for_mapping(mapping)
+    if mapping and provider_account and mapped_account and provider_account != mapped_account:
+        frappe.throw(
+            f"Mode of Payment {mode_of_payment} is mapped to Provider Account {mapped_account}, not {provider_account}."
+        )
+    provider_account = mapped_account or provider_account
+    if mapping and mapping.provider_payment_method:
+        payment_method = mapping.provider_payment_method
     account = resolve_online_account(provider_account)
     provider = get_provider(account)
     customer = customer_payload(session, mobile_number)
@@ -351,7 +453,7 @@ def create_payment_link(
     settings = get_settings()
     allocation = create_allocation(
         session,
-        channel="Electronic Payment",
+        channel=CHANNEL_ELECTRONIC,
         amount=amount,
         mode_of_payment=mode_of_payment or getattr(settings, "electronic_mode_of_payment", None) or "Electronic Payment",
         status="Draft",
@@ -378,6 +480,8 @@ def create_payment_link(
                 "branch": session.branch,
                 "pos_profile": session.pos_profile,
                 "warehouse": session.warehouse,
+                "pos_payment_session": session.name,
+                "pos_payment_allocation": allocation.name,
             }),
         )
 
@@ -401,7 +505,7 @@ def create_payment_link(
         allocation.payment_url = txn.payment_url
         allocation.actual_payment_method = txn.provider_payment_type
         allocation.status = "Captured" if txn.status == "Captured" else "Waiting"
-        expiry_minutes = max(1, int(getattr(settings, "payment_link_expiry_minutes", 30) or 30))
+        expiry_minutes = _payment_link_lifetime_minutes(settings, account, normalized)
         allocation.expires_at = add_to_date(now_datetime(), minutes=expiry_minutes)
         if allocation.status == "Captured":
             allocation.captured_at = now_datetime()
@@ -420,6 +524,261 @@ def create_payment_link(
         "allocation": _allocation_response(allocation),
         "session": _session_response(session),
         "payment_message": compose_payment_message(allocation.name),
+    }
+
+
+def _record_cash_tender(session_name, cash_tendered, cash_applied):
+    """Persist tender/change separately from the amount applied to the invoice."""
+    session = frappe.get_doc("POS Payment Session", session_name)
+    tendered = flt(cash_tendered, 3)
+    applied = flt(cash_applied, 3)
+    session.cash_tendered_amount = tendered
+    session.change_amount = max(flt(tendered - applied, 3), 0)
+    session.save(ignore_permissions=True)
+    return session
+
+
+def _parse_payment_rows(payments):
+    if isinstance(payments, str):
+        payments = frappe.parse_json(payments)
+    if not isinstance(payments, (list, tuple)):
+        frappe.throw("Payments must be a JSON array.")
+    rows = []
+    for raw in payments:
+        row = frappe._dict(raw or {})
+        amount = flt(row.get("amount"), 3)
+        if amount <= 0:
+            continue
+        mode = str(row.get("mode_of_payment") or "").strip()
+        if not mode:
+            frappe.throw("Every payment row must have a Mode of Payment.")
+        rows.append(frappe._dict(mode_of_payment=mode, amount=amount))
+    return rows
+
+
+def _classify_mapped_payment(mode_of_payment, *, company=None, pos_profile=None):
+    from erpnext_payment_hub.pos.mapping import get_mode_mapping
+    mapping = get_mode_mapping(
+        mode_of_payment, company=company, pos_profile=pos_profile
+    )
+    if mapping:
+        return mapping.channel, mapping
+
+    settings = get_settings()
+    normalized = str(mode_of_payment or "").strip().lower()
+    fallbacks = {
+        str(getattr(settings, "cash_mode_of_payment", None) or "Cash").strip().lower(): CHANNEL_CASH,
+        str(getattr(settings, "electronic_mode_of_payment", None) or "Electronic Payment").strip().lower(): CHANNEL_ELECTRONIC,
+        str(getattr(settings, "physical_mode_of_payment", None) or "Physical Payment Terminal").strip().lower(): CHANNEL_PHYSICAL,
+    }
+    channel = fallbacks.get(normalized)
+    if channel:
+        return channel, None
+
+    # Cash Mode of Payment records may use any custom label. Respect ERPNext's
+    # own Mode of Payment type for cash; all other gateway/bank modes must be
+    # explicitly mapped so provider routing cannot be guessed from a name.
+    if frappe.db.exists("Mode of Payment", mode_of_payment):
+        mop_type = frappe.db.get_value("Mode of Payment", mode_of_payment, "type")
+        if str(mop_type or "").strip().lower() == "cash":
+            return CHANNEL_CASH, None
+
+    frappe.throw(
+        f"Mode of Payment {mode_of_payment} is not mapped in Payment Hub Settings. "
+        "Map non-cash methods to Manual / Non-Cash, Electronic Payment, or Physical Payment Terminal."
+    )
+
+
+@frappe.whitelist()
+def begin_mapped_sale(
+    pos_system,
+    company,
+    grand_total,
+    payments,
+    draft_payload,
+    currency="KWD",
+    mobile_number=None,
+    customer=None,
+    customer_name=None,
+    email=None,
+    pos_profile=None,
+    branch=None,
+    warehouse=None,
+    computer_name=None,
+    pos_station=None,
+    pos_opening_shift=None,
+    cart_reference=None,
+    idempotency_key=None,
+    send_whatsapp=1,
+    auto_complete=1,
+):
+    """Start one POS sale containing mapped manual, electronic, terminal and cash tenders.
+
+    Non-cash allocations may be partial and may use multiple providers, but their
+    combined amount can never exceed the invoice total. Cash is the only tender
+    allowed to exceed the remaining balance; the excess is persisted as change.
+    """
+    grand_total = flt(grand_total, 3)
+    if grand_total <= 0:
+        frappe.throw("Grand Total must be greater than zero.")
+
+    rows = _parse_payment_rows(payments)
+    if not rows:
+        frappe.throw("At least one payment is required.")
+
+    classified = []
+    cash_rows = []
+    noncash_total = 0.0
+    for row in rows:
+        channel, mapping = _classify_mapped_payment(
+            row.mode_of_payment, company=company, pos_profile=pos_profile
+        )
+        item = frappe._dict(row)
+        item.channel = channel
+        item.mapping = mapping
+        classified.append(item)
+        if channel == CHANNEL_CASH:
+            cash_rows.append(item)
+        else:
+            noncash_total += flt(item.amount, 3)
+
+    noncash_total = flt(noncash_total, 3)
+    if noncash_total > grand_total + 0.001:
+        frappe.throw(
+            f"Non-cash payments cannot exceed the sale total. "
+            f"Allocated {noncash_total:.3f} / {grand_total:.3f} {currency}."
+        )
+
+    cash_tendered = flt(sum(flt(r.amount, 3) for r in cash_rows), 3)
+    required_cash = max(flt(grand_total - noncash_total, 3), 0)
+    if cash_tendered + noncash_total < grand_total - 0.001:
+        frappe.throw(
+            f"Payment is short by {grand_total - cash_tendered - noncash_total:.3f} {currency}."
+        )
+    if len({r.mode_of_payment for r in cash_rows}) > 1:
+        frappe.throw("Use only one Cash Mode of Payment per checkout.")
+
+    # Validate every provider/terminal mapping before making any external request.
+    for row in classified:
+        mapping = row.mapping
+        if row.channel == CHANNEL_ELECTRONIC:
+            account_name = provider_account_for_mapping(mapping) if mapping else None
+            resolve_online_account(account_name)
+        elif row.channel == CHANNEL_PHYSICAL:
+            account_name = provider_account_for_mapping(mapping) if mapping else None
+            account = resolve_physical_account(
+                frappe._dict({
+                    "company": company, "pos_profile": pos_profile, "branch": branch,
+                    "warehouse": warehouse, "pos_station": pos_station, "computer_name": computer_name,
+                }),
+                account_name,
+            )
+            provider = get_provider(account)
+            if not hasattr(provider, "create_terminal_payment"):
+                frappe.throw(
+                    f"{account.provider} physical-terminal API is not implemented in Payment Hub yet."
+                )
+
+    base_key = idempotency_key or cart_reference or make_idempotency("POS", pos_system or "API")
+    session = create_pos_session(
+        pos_system=pos_system, company=company, grand_total=grand_total, currency=currency,
+        customer=customer, customer_name=customer_name, mobile_number=mobile_number, email=email,
+        pos_profile=pos_profile, branch=branch, warehouse=warehouse, computer_name=computer_name,
+        pos_station=pos_station, pos_opening_shift=pos_opening_shift, cart_reference=cart_reference,
+        idempotency_key=f"{base_key}:SESSION", draft_payload=draft_payload,
+    )
+    session_name = session["name"]
+    prepare_pos_invoice(
+        session_name=session_name, invoice_payload=draft_payload, invoice_doctype="Sales Invoice"
+    )
+
+    # Record tender/change immediately. Only required/applied cash becomes an
+    # accounting allocation; excess physical cash is change due to the customer.
+    _record_cash_tender(session_name, cash_tendered, required_cash)
+
+    allocations = []
+    whatsapp = []
+    errors = []
+
+    # Accepted manual non-cash tenders (cheque, bank transfer, etc.) do not
+    # call a gateway, but they are still non-cash and can never create change.
+    for idx, row in enumerate((r for r in classified if r.channel == CHANNEL_MANUAL), start=1):
+        try:
+            result = add_manual_noncash_allocation(
+                session_name=session_name,
+                amount=row.amount,
+                mode_of_payment=row.mode_of_payment,
+                idempotency_key=f"{base_key}:MANUAL:{idx}",
+            )
+            allocations.append(result.get("allocation"))
+        except Exception as exc:
+            errors.append({"mode_of_payment": row.mode_of_payment, "channel": row.channel, "error": str(exc)})
+
+    # Physical terminal attempts run before hosted links. If a terminal call
+    # fails, the session remains recoverable and no duplicate cart is needed.
+    for idx, row in enumerate((r for r in classified if r.channel == CHANNEL_PHYSICAL), start=1):
+        mapping = row.mapping
+        try:
+            result = start_terminal_payment(
+                session_name=session_name, amount=row.amount,
+                provider_account=provider_account_for_mapping(mapping) if mapping else None,
+                payment_method=(mapping.provider_payment_method if mapping and mapping.provider_payment_method else "CARD"),
+                mode_of_payment=row.mode_of_payment,
+                payment_terminal=(mapping.payment_terminal if mapping else None),
+                computer_name=computer_name,
+                idempotency_key=f"{base_key}:TERMINAL:{idx}",
+            )
+            allocations.append(result.get("allocation"))
+        except Exception as exc:
+            errors.append({"mode_of_payment": row.mode_of_payment, "channel": row.channel, "error": str(exc)})
+
+    for idx, row in enumerate((r for r in classified if r.channel == CHANNEL_ELECTRONIC), start=1):
+        mapping = row.mapping
+        try:
+            result = create_payment_link(
+                session_name=session_name, amount=row.amount, mobile_number=mobile_number,
+                provider_account=provider_account_for_mapping(mapping) if mapping else None,
+                payment_method=(mapping.provider_payment_method if mapping and mapping.provider_payment_method else "KNET"),
+                mode_of_payment=row.mode_of_payment,
+                idempotency_key=f"{base_key}:ELECTRONIC:{idx}",
+            )
+            allocation = result.get("allocation")
+            allocations.append(allocation)
+            if cint(send_whatsapp) and allocation and allocation.get("status") == "Waiting":
+                try:
+                    whatsapp.append(send_payment_link(allocation["name"]))
+                except Exception as exc:
+                    errors.append({"mode_of_payment": row.mode_of_payment, "channel": row.channel, "error": str(exc)})
+        except Exception as exc:
+            errors.append({"mode_of_payment": row.mode_of_payment, "channel": row.channel, "error": str(exc)})
+
+    if required_cash > 0:
+        cash_mode = cash_rows[0].mode_of_payment if cash_rows else (getattr(get_settings(), "cash_mode_of_payment", None) or "Cash")
+        try:
+            result = add_cash_allocation(
+                session_name=session_name, amount=required_cash, mode_of_payment=cash_mode,
+                idempotency_key=f"{base_key}:CASH",
+            )
+            allocations.append(result.get("allocation"))
+        except Exception as exc:
+            errors.append({"mode_of_payment": cash_mode, "channel": CHANNEL_CASH, "error": str(exc)})
+
+    current = recalculate_session(session_name)
+    invoice = None
+    if cint(auto_complete) and current.status == "Ready to Complete":
+        completed = complete_pos_session(session_name=session_name, submit=1)
+        current = frappe.get_doc("POS Payment Session", session_name)
+        invoice = completed.get("invoice")
+
+    return {
+        "session": _session_response(current),
+        "allocations": allocations,
+        "whatsapp": whatsapp,
+        "errors": errors,
+        "cash_tendered_amount": cash_tendered,
+        "cash_applied_amount": required_cash,
+        "change_amount": max(flt(cash_tendered - required_cash, 3), 0),
+        "invoice": invoice,
     }
 
 
@@ -465,10 +824,15 @@ def begin_async_electronic_sale(
         frappe.throw("Electronic Payment amount must be greater than zero.")
     if cash_amount < 0:
         frappe.throw("Cash amount cannot be negative.")
-    if abs((cash_amount + electronic_amount) - grand_total) > 0.001:
+    if electronic_amount > grand_total + 0.001:
         frappe.throw(
-            f"Cash + Electronic Payment must equal the sale total. "
-            f"Allocated {cash_amount + electronic_amount:.3f} / {grand_total:.3f} {currency}."
+            f"Electronic Payment cannot exceed the sale total. "
+            f"Allocated {electronic_amount:.3f} / {grand_total:.3f} {currency}."
+        )
+    cash_applied = max(flt(grand_total - electronic_amount, 3), 0)
+    if cash_amount + electronic_amount < grand_total - 0.001:
+        frappe.throw(
+            f"Payment is short by {grand_total - cash_amount - electronic_amount:.3f} {currency}."
         )
 
     base_key = idempotency_key or cart_reference or make_idempotency("POS", pos_system or "API")
@@ -512,10 +876,11 @@ def begin_async_electronic_sale(
         idempotency_key=f"{base_key}:ELECTRONIC",
     )
 
-    if cash_amount > 0:
+    _record_cash_tender(session_name, cash_amount, cash_applied)
+    if cash_applied > 0:
         add_cash_allocation(
             session_name=session_name,
-            amount=cash_amount,
+            amount=cash_applied,
             mode_of_payment=cash_mode_of_payment,
             idempotency_key=f"{base_key}:CASH",
         )
@@ -541,6 +906,120 @@ def begin_async_electronic_sale(
         ),
         "payment_message": compose_payment_message(allocation["name"]),
         "whatsapp": send_result,
+        "cash_tendered_amount": cash_amount,
+        "cash_applied_amount": cash_applied,
+        "change_amount": max(flt(cash_amount - cash_applied, 3), 0),
+    }
+
+
+@frappe.whitelist()
+def begin_terminal_sale(
+    pos_system,
+    company,
+    grand_total,
+    terminal_amount,
+    draft_payload,
+    currency="KWD",
+    cash_amount=0,
+    customer=None,
+    customer_name=None,
+    mobile_number=None,
+    email=None,
+    pos_profile=None,
+    branch=None,
+    warehouse=None,
+    computer_name=None,
+    pos_station=None,
+    pos_opening_shift=None,
+    cart_reference=None,
+    provider_account=None,
+    payment_terminal=None,
+    payment_method="CARD",
+    cash_mode_of_payment=None,
+    terminal_mode_of_payment=None,
+    idempotency_key=None,
+    auto_complete=1,
+):
+    """Create a POS physical-terminal sale with mapping-aware provider/terminal routing."""
+    grand_total = flt(grand_total, 3)
+    terminal_amount = flt(terminal_amount, 3)
+    cash_amount = flt(cash_amount, 3)
+    if grand_total <= 0 or terminal_amount <= 0:
+        frappe.throw("Grand Total and terminal amount must be greater than zero.")
+    if terminal_amount > grand_total + 0.001:
+        frappe.throw(
+            f"Physical Terminal payment cannot exceed the sale total. "
+            f"Allocated {terminal_amount:.3f} / {grand_total:.3f} {currency}."
+        )
+    cash_applied = max(flt(grand_total - terminal_amount, 3), 0)
+    if cash_amount + terminal_amount < grand_total - 0.001:
+        frappe.throw(
+            f"Payment is short by {grand_total - cash_amount - terminal_amount:.3f} {currency}."
+        )
+
+    base_key = idempotency_key or cart_reference or make_idempotency("POS", pos_system or "API")
+    session = create_pos_session(
+        pos_system=pos_system,
+        company=company,
+        grand_total=grand_total,
+        currency=currency,
+        customer=customer,
+        customer_name=customer_name,
+        mobile_number=mobile_number,
+        email=email,
+        pos_profile=pos_profile,
+        branch=branch,
+        warehouse=warehouse,
+        computer_name=computer_name,
+        pos_station=pos_station,
+        pos_opening_shift=pos_opening_shift,
+        cart_reference=cart_reference,
+        idempotency_key=f"{base_key}:SESSION",
+        draft_payload=draft_payload,
+    )
+    session_name = session["name"]
+    prepare_pos_invoice(
+        session_name=session_name,
+        invoice_payload=draft_payload,
+        invoice_doctype="Sales Invoice",
+    )
+
+    terminal_result = start_terminal_payment(
+        session_name=session_name,
+        amount=terminal_amount,
+        provider_account=provider_account,
+        payment_terminal=payment_terminal,
+        payment_method=payment_method or "CARD",
+        mode_of_payment=terminal_mode_of_payment,
+        computer_name=computer_name,
+        idempotency_key=f"{base_key}:TERMINAL",
+    )
+    _record_cash_tender(session_name, cash_amount, cash_applied)
+    if cash_applied > 0:
+        add_cash_allocation(
+            session_name=session_name,
+            amount=cash_applied,
+            mode_of_payment=cash_mode_of_payment,
+            idempotency_key=f"{base_key}:CASH",
+        )
+
+    current = frappe.get_doc("POS Payment Session", session_name)
+    current = recalculate_session(current)
+    invoice = None
+    if cint(auto_complete) and current.status == "Ready to Complete":
+        completed = complete_pos_session(session_name=session_name, submit=1)
+        current = frappe.get_doc("POS Payment Session", session_name)
+        invoice = completed.get("invoice")
+
+    return {
+        "session": _session_response(current),
+        "terminal_allocation": _allocation_response(
+            frappe.get_doc("POS Payment Allocation", terminal_result["allocation"]["name"])
+        ),
+        "invoice": invoice,
+        "cash_tendered_amount": cash_amount,
+        "cash_applied_amount": cash_applied,
+        "change_amount": max(flt(cash_amount - cash_applied, 3), 0),
     }
 
 
@@ -589,6 +1068,39 @@ def send_payment_link(allocation_name):
             f"This payment attempt is {allocation.status}. "
             "Create a new payment link instead of resending the old link."
         )
+
+    # Before a resend, refresh the provider status. Never send a URL that the
+    # provider has already captured, abandoned, declined, cancelled or expired.
+    # The first send immediately after charge creation does not need an extra API call.
+    link_expired = bool(allocation.expires_at and get_datetime(allocation.expires_at) <= now_datetime())
+    if int(allocation.link_send_count or 0) > 0 or link_expired:
+        if allocation.gateway_transaction:
+            try:
+                txn = frappe.get_doc("Gateway Transaction", allocation.gateway_transaction)
+                account = get_provider_account(txn.provider_account)
+                provider = get_provider(account)
+                normalized = provider.get_payment_status(txn)
+                update_transaction_from_status(txn, normalized)
+                allocation.reload()
+            except Exception:
+                frappe.throw(
+                    "Unable to verify the existing payment link with the provider. "
+                    "Check Payment Status before resending it."
+                )
+        if allocation.status == "Captured":
+            frappe.throw("This payment is already captured. Do not send another payment link.")
+        if allocation.status != "Waiting":
+            frappe.throw(
+                f"This payment attempt is {allocation.status}. "
+                "Create a new payment link instead of resending the old link."
+            )
+        if allocation.expires_at and get_datetime(allocation.expires_at) <= now_datetime():
+            allocation.status = "Expired"
+            allocation.failed_reason = allocation.failed_reason or "Payment link lifetime ended before resend."
+            allocation.save(ignore_permissions=True)
+            recalculate_session(allocation.session)
+            frappe.throw("This payment link has expired. Create a new payment link instead.")
+
     if not allocation.mobile_number:
         frappe.throw("Mobile number is missing for this payment allocation.")
     message = compose_payment_message(allocation.name)
@@ -770,6 +1282,7 @@ def start_terminal_payment(
     provider_account=None,
     payment_method="CARD",
     mode_of_payment=None,
+    payment_terminal=None,
     computer_name=None,
     idempotency_key=None,
 ):
@@ -781,6 +1294,22 @@ def start_terminal_payment(
         existing = get_existing_by_idempotency("POS Payment Allocation", idempotency_key)
         if existing:
             return {"allocation": _allocation_response(existing), "session": _session_response(session)}
+
+    mapping = assert_mapping_channel(mode_of_payment, CHANNEL_PHYSICAL, session=session) if mode_of_payment else None
+    mapped_account = provider_account_for_mapping(mapping)
+    if mapping and provider_account and mapped_account and provider_account != mapped_account:
+        frappe.throw(
+            f"Mode of Payment {mode_of_payment} is mapped to Provider Account {mapped_account}, not {provider_account}."
+        )
+    provider_account = mapped_account or provider_account
+    if mapping and mapping.provider_payment_method:
+        payment_method = mapping.provider_payment_method
+    if mapping and mapping.payment_terminal:
+        if payment_terminal and payment_terminal != mapping.payment_terminal:
+            frappe.throw(
+                f"Mode of Payment {mode_of_payment} is mapped to terminal {mapping.payment_terminal}, not {payment_terminal}."
+            )
+        payment_terminal = mapping.payment_terminal
 
     account = resolve_physical_account(session, provider_account)
     provider = get_provider(account)
@@ -796,7 +1325,15 @@ def start_terminal_payment(
         branch=session.branch,
     )
     terminal = None
-    if station and station.payment_terminal:
+    if payment_terminal:
+        terminal = frappe.get_doc("Payment Terminal", payment_terminal)
+        if not terminal.enabled:
+            frappe.throw(f"Payment Terminal {terminal.name} is disabled.")
+        if terminal.provider_account != account.name:
+            frappe.throw(
+                f"Payment Terminal {terminal.name} belongs to {terminal.provider_account}, not {account.name}."
+            )
+    if not terminal and station and station.payment_terminal:
         terminal = frappe.get_doc("Payment Terminal", station.payment_terminal)
     if not terminal:
         terminal = resolve_payment_terminal(
@@ -812,7 +1349,7 @@ def start_terminal_payment(
     settings = get_settings()
     allocation = create_allocation(
         session,
-        channel="Physical Payment Terminal",
+        channel=CHANNEL_PHYSICAL,
         amount=amount,
         mode_of_payment=mode_of_payment or getattr(settings, "physical_mode_of_payment", None) or "Physical Payment Terminal",
         status="Draft",

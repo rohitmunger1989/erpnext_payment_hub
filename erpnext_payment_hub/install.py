@@ -44,7 +44,7 @@ def ensure_settings_defaults():
         "whatsapp_integration": "Frappe WhatsApp",
         "async_electronic_payment": 1,
         "after_electronic_capture": "Mark Paid Only",
-        "payment_link_expiry_minutes": 30,
+        "payment_link_expiry_minutes": 1440,
         "pending_sale_retention_hours": 24,
         "auto_expire_pending_sales": 1,
         "default_draft_print_type": "Receipt",

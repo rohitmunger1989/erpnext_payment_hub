@@ -31,6 +31,8 @@
     "confirmed_paid_amount",
     "pending_amount",
     "remaining_amount",
+    "cash_tendered_amount",
+    "change_amount",
     "draft_section",
     "draft_payload",
     "draft_saved_at",
@@ -218,6 +220,24 @@
       "default": "0",
       "read_only": 1,
       "in_list_view": 1
+    },
+    {
+      "fieldname": "cash_tendered_amount",
+      "label": "Cash Tendered",
+      "fieldtype": "Currency",
+      "precision": "3",
+      "default": "0",
+      "read_only": 1,
+      "description": "Physical cash handed over by the customer before change is returned."
+    },
+    {
+      "fieldname": "change_amount",
+      "label": "Change Amount",
+      "fieldtype": "Currency",
+      "precision": "3",
+      "default": "0",
+      "read_only": 1,
+      "description": "Change due to the customer. Only Cash may create overpayment/change."
     },
     {
       "fieldname": "draft_section",

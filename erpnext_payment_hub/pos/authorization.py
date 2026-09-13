@@ -6,6 +6,8 @@ import json
 import secrets
 
 import frappe
+from erpnext_payment_hub.pos.mapping import CHANNEL_CASH, get_mode_mapping
+
 from frappe.utils import add_to_date, cint, flt, now_datetime
 from frappe.utils.password import check_password
 
@@ -116,11 +118,18 @@ def authorize_pos_refund(
         if not cint(getattr(settings, "allow_refund_method_override", 1)):
             frappe.throw("Refund method override is disabled in Payment Hub Settings.")
         cash_mode = getattr(settings, "cash_mode_of_payment", None) or "Cash"
-        if override_channel != "Cash" or (override_mode_of_payment or cash_mode) != cash_mode:
+        requested_mode = override_mode_of_payment or cash_mode
+        mapped_cash = get_mode_mapping(
+            requested_mode,
+            company=getattr(return_doc, "company", None),
+            pos_profile=getattr(return_doc, "pos_profile", None),
+        )
+        is_cash_mapping = bool(mapped_cash and mapped_cash.channel == CHANNEL_CASH)
+        if override_channel != CHANNEL_CASH or (requested_mode != cash_mode and not is_cash_mapping):
             frappe.throw(
-                "v0.5.0 only permits an audited manager override to the configured Cash refund method."
+                "Refund override is permitted only to a configured Cash Mode of Payment."
             )
-        override_mode_of_payment = cash_mode
+        override_mode_of_payment = requested_mode
 
     token = secrets.token_urlsafe(32)
     doc = frappe.new_doc("Payment Hub Refund Authorization")

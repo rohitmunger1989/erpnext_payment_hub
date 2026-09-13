@@ -735,9 +735,13 @@ def process_pos_return_refund(
             results.append(_refund_allocation_response(row))
             continue
 
-        if (row.actual_refund_channel or allocation.channel) == "Cash":
+        actual_refund_channel = row.actual_refund_channel or allocation.channel
+        if actual_refund_channel in ("Cash", "Manual / Non-Cash"):
             row.status = "Completed"
-            row.provider_status = "Cash Refund Override" if row.is_override else "Cash Refunded"
+            if actual_refund_channel == "Cash":
+                row.provider_status = "Cash Refund Override" if row.is_override else "Cash Refunded"
+            else:
+                row.provider_status = "Manual Non-Cash Refund Recorded"
             if not row.completed_at:
                 row.completed_at = now_datetime()
             row.save(ignore_permissions=True)

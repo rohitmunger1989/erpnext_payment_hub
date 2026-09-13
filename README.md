@@ -1,17 +1,36 @@
-# ERPNext Payment Hub — v0.6.5
+# ERPNext Payment Hub — v0.6.6
 
 Provider-agnostic payment gateway foundation for ERPNext.
 
 
+## v0.6.6 — Custom Mode of Payment Routing
+
+Payment Hub can now route **any ERPNext Mode of Payment name** through a configurable child table in **Payment Hub Settings → Payment Method Mappings**. The displayed Mode of Payment is no longer required to be named `Electronic Payment` or `Physical Payment Terminal`.
+
+Examples:
+
+| Mode of Payment | Channel | Provider Account | Terminal |
+| --- | --- | --- | --- |
+| Tap Payment | Electronic Payment | BM Tap Live | — |
+| UPayment | Electronic Payment | BM UPayments Live | — |
+| TAP Terminal | Physical Payment Terminal | BM Tap Terminal | TAP POS 01 |
+| UPay Terminal | Physical Payment Terminal | BM UPay Terminal | UPay POS 01 |
+| Cash | Cash | — | — |
+
+Mappings may be global or restricted by Company / POS Profile. More-specific POS Profile mappings win; lower Priority wins between equally-specific rows. The old single-mode settings remain as backward-compatible fallbacks when no mapping row exists.
+
+> Physical-terminal routing is mapping-ready, but the selected provider must implement its SmartPOS/ECR `create_terminal_payment` adapter. The included Tap, UPayments and MyFatoorah online-link adapters do not invent terminal protocols without merchant/provider terminal API specifications.
+
+
 ## v0.6.5 — POSNext v2.0.0 compatibility
 
-v0.6.5 keeps the Payment Hub backend/payment/refund behavior from v0.6.4 and adds a dedicated frontend integration for **POSNext v2.0.0 at commit `e0a52c5`**.
+v0.6.5 added the dedicated frontend integration for **POSNext v2.0.0 at commit `e0a52c5`**. v0.6.6 keeps that compatibility and adds mapping-aware routing for multiple custom electronic and physical-terminal Mode of Payment names.
 
 Supported POSNext integration bases included with this source:
 
 | POSNext base | Integration file | Notes |
 |---|---|---|
-| v2.0.0 / `e0a52c5` | `integrations/pos_next/pos_next_payment_hub_v0.6.5_posnext_v2.0.0_e0a52c5.patch` | Current adapter |
+| v2.0.0 / `e0a52c5` | `integrations/pos_next/pos_next_payment_hub_v0.6.6_posnext_v2.0.0_e0a52c5.patch` | v0.6.6 consolidated adapter |
 | legacy / `fbf8e80` | `integrations/pos_next/pos_next_payment_hub_legacy_v0.6.4_fbf8e80.patch` | Previous consolidated adapter |
 
 The v2.0.0 adapter preserves:
@@ -32,7 +51,7 @@ The v2.0.0 adapter preserves:
 
 The adapter intentionally does **not** modify `POS/components.d.ts` or `pos_next/fixtures/custom_docperm.json`.
 
-See `integrations/pos_next/README.md` before applying a POSNext patch. Never apply both POSNext patches to the same checkout.
+See `integrations/pos_next/README.md` before applying a POSNext patch. For v2.0.0, use either the clean consolidated v0.6.6 patch or the incremental v0.6.5→v0.6.6 patch, depending on your current POSNext state; never apply both.
 
 Supported adapters in Phase 1:
 
@@ -42,7 +61,7 @@ Supported adapters in Phase 1:
 
 ## Core design
 
-ERPNext calls one common payment API. The selected backend provider can be changed in **Payment Hub Settings**.
+ERPNext calls one common payment API. In v0.6.6, each ERPNext Mode of Payment can route to its own provider account or terminal through **Payment Hub Settings → Payment Method Mappings**; the older single-provider defaults remain available as fallback.
 
 Every electronic payment is saved as a **Gateway Transaction** with the provider account and provider transaction references.
 
@@ -1102,3 +1121,57 @@ The selected A4/receipt format is site-configurable rather than hardcoded. If th
 - Existing sites with `Pending Sale Retention (Hours) = 0` are corrected to **24 hours** during migrate.
 - Existing Payment Hub sessions are backfilled with shift/business-date context when it can be recovered from the saved POS payload or linked invoice.
 - v0.6.3 invoice-ownership protections remain in place; each Payment Hub session owns only its own Sales Invoice draft.
+
+## v0.6.7 — Global Mappings, Multi-Provider Split Tender and Cash Change
+
+v0.6.7 completes the custom Mode of Payment routing introduced in v0.6.6.
+
+### Mapping scope
+
+- Leave **POS Profile** blank on a Payment Method Mapping to apply it to **all POS Profiles**.
+- Add a POS Profile-specific row only when that profile must use a different provider/terminal.
+- A profile-specific row wins over the global row for the same Mode of Payment.
+- Payment Hub mappings route payment behavior; the Mode of Payment must still be available in the ERPNext POS Profile for POSNext to display it.
+
+### Any mapped Electronic Payment gets the payment-link flow
+
+The POSNext adapter resolves the mapping channel instead of comparing hardcoded labels. A custom Mode of Payment such as `Tap Payment`, `UPayment`, or `MyFatoorah Link` mapped to **Electronic Payment** uses the same mobile/payment-link flow and provider routing.
+
+`Customer Credit` in POSNext is a special customer-balance feature. Do not reuse that reserved label for a gateway mapping; create a normal Mode of Payment such as `MyFatoorah`, `Tap Payment`, or `Customer Payment Link` instead.
+
+### Multi-provider split tender
+
+One sale can now contain multiple Payment Hub-managed non-cash methods together, for example:
+
+- Tap Payment: 1.000 KWD
+- TAP Terminal: 1.000 KWD
+- UPay Terminal / Credit Card: 1.000 KWD
+- Cash tendered: 5.000 KWD
+- Sale total: 5.000 KWD
+- Change: 3.000 KWD
+
+Rules:
+
+- Combined **non-cash** tender can never exceed the sale total.
+- Non-cash methods may be partial; they do not have to equal the whole remaining balance.
+- **Cash is the only tender allowed to exceed the remaining balance.**
+- Excess cash is recorded as `Change Amount` and is not posted as an extra payment against the invoice.
+- The Payment Hub session stores both `Cash Tendered` and `Change Amount`.
+- The final invoice receives only the cash amount actually applied to the invoice, keeping accounting allocations equal to the invoice total.
+
+The POSNext action label changes dynamically to **Send Payment Link**, **Start Terminal Payment**, or **Start Payments / Send Link** based on the mapped rows.
+
+## v0.6.8 — Provider-aware link expiry and Manual / Non-Cash routing
+
+v0.6.8 separates the POS session recovery window from the lifetime of each provider payment attempt.
+
+- `Pending Sale Retention (Hours)` remains the configurable Payment Hub recovery window (for example 24 hours).
+- `Fallback Payment Link Lifetime (Minutes)` is configurable in Payment Hub Settings and defaults to 1440 minutes for new installs.
+- Each Payment Provider Account can override that fallback with its own `Fallback Payment Link Lifetime (Minutes)`.
+- A provider-reported expiry is authoritative. Tap Payments responses include `transaction.expiry`; Payment Hub now uses that value instead of assuming the global fallback. If a live Tap/KNET merchant returns a different expiry from sandbox, the returned provider value is used automatically.
+- Resending an already-sent electronic payment link now refreshes provider status first. Captured, failed, abandoned, cancelled or expired attempts are never resent; the cashier must create a fresh payment attempt.
+- Tap retry attempts use the POS Payment Allocation as the provider transaction/order reference while retaining the parent POS Payment Session in metadata, making each retry auditable without creating a new sale session.
+- New `Manual / Non-Cash` channel supports accepted cheque, bank transfer and other normal ERPNext non-cash Modes of Payment without calling a gateway. These methods can never create cash change.
+- Only Cash may exceed the remaining invoice balance. All non-cash channels combined remain capped at the sale total.
+
+For POSNext loyalty/customer-credit features, keep using their native accounting workflow unless the value is represented as a normal ERPNext Mode of Payment. Do not map an accounts-receivable credit sale as a captured manual payment.

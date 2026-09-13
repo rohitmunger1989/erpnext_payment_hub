@@ -22,6 +22,25 @@ class TapProvider(BaseProvider):
             "ALL": "src_all",
         }.get(method, "src_all")
 
+    @staticmethod
+    def _expiry_details(result):
+        transaction = (result or {}).get("transaction") or {}
+        expiry = transaction.get("expiry") or {}
+        try:
+            period = float(expiry.get("period"))
+        except (TypeError, ValueError):
+            return {}
+        unit = str(expiry.get("type") or "MINUTE").upper()
+        factors = {"SECOND": 1 / 60, "SECONDS": 1 / 60, "MINUTE": 1, "MINUTES": 1, "HOUR": 60, "HOURS": 60, "DAY": 1440, "DAYS": 1440}
+        factor = factors.get(unit)
+        if factor is None or period <= 0:
+            return {}
+        return {
+            "provider_expiry_minutes": max(period * factor, 1 / 60),
+            "provider_expiry_period": period,
+            "provider_expiry_type": unit,
+        }
+
     def create_payment(
         self,
         *,
@@ -46,6 +65,13 @@ class TapProvider(BaseProvider):
                 "Use at least KD 0.100 for a KWD test."
             )
 
+        pos_context = pos_context or {}
+        attempt_reference = (
+            pos_context.get("pos_payment_allocation")
+            or pos_context.get("attempt_reference")
+            or reference_name
+        )
+
         payload = {
             "amount": float(amount),
             "currency": currency,
@@ -54,12 +80,14 @@ class TapProvider(BaseProvider):
             "save_card": False,
             "description": f"{reference_doctype} {reference_name}",
             "reference": {
-                "transaction": reference_name,
-                "order": reference_name,
+                "transaction": attempt_reference,
+                "order": attempt_reference,
             },
             "metadata": {
                 "erpnext_doctype": reference_doctype,
                 "erpnext_docname": reference_name,
+                "pos_payment_session": pos_context.get("pos_payment_session") or reference_name,
+                "pos_payment_allocation": pos_context.get("pos_payment_allocation") or "",
             },
             "customer": {
                 "first_name": customer.get("name") or "Customer",
@@ -81,6 +109,7 @@ class TapProvider(BaseProvider):
         result = self.request("POST", f"{self.base_url()}/charges/", json_data=payload)
 
         source = result.get("source") or {}
+        expiry_details = self._expiry_details(result)
         return {
             "provider_transaction_id": result.get("id"),
             "provider_order_id": (result.get("reference") or {}).get("order") or reference_name,
@@ -89,6 +118,7 @@ class TapProvider(BaseProvider):
             "payment_type": source.get("payment_method") or source.get("payment_type"),
             "status": result.get("status") or "INITIATED",
             "payment_url": (result.get("transaction") or {}).get("url"),
+            **expiry_details,
             "raw": result,
         }
 
@@ -100,6 +130,7 @@ class TapProvider(BaseProvider):
             f"{self.base_url()}/charges/{transaction.provider_transaction_id}",
         )
         source = result.get("source") or {}
+        expiry_details = self._expiry_details(result)
         return {
             "status": result.get("status"),
             "provider_transaction_id": result.get("id"),
@@ -107,6 +138,7 @@ class TapProvider(BaseProvider):
             "provider_payment_id": (result.get("reference") or {}).get("payment"),
             "provider_tracking_id": (result.get("reference") or {}).get("gateway"),
             "payment_type": source.get("payment_method") or source.get("payment_type"),
+            **expiry_details,
             "raw": result,
         }
 

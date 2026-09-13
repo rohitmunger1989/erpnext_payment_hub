@@ -215,6 +215,11 @@ def create_or_update_invoice(
         if frappe.get_meta(doc.doctype).has_field("is_pos"):
             doc.is_pos = 1
         payments_attached = _set_invoice_payments(doc, rows)
+        # Payment Hub stores only the cash amount applied to the invoice as a
+        # payment allocation. Preserve the physical tender/change separately so
+        # POS receipts can still show what the customer handed over.
+        if frappe.get_meta(doc.doctype).has_field("change_amount"):
+            doc.change_amount = flt(getattr(session, "change_amount", 0), 3)
         doc.save(ignore_permissions=True)
         _validate_total(doc, session)
         if submit:

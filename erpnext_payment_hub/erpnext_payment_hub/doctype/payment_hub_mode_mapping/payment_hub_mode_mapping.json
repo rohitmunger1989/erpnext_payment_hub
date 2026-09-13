@@ -1,0 +1,93 @@
+{
+  "doctype": "DocType",
+  "name": "Payment Hub Mode Mapping",
+  "module": "ERPNext Payment Hub",
+  "istable": 1,
+  "editable_grid": 1,
+  "field_order": [
+    "enabled",
+    "mode_of_payment",
+    "channel",
+    "provider_account",
+    "payment_terminal",
+    "provider_payment_method",
+    "scope_section",
+    "company",
+    "pos_profile",
+    "priority"
+  ],
+  "fields": [
+    {
+      "fieldname": "enabled",
+      "label": "Enabled",
+      "fieldtype": "Check",
+      "default": "1",
+      "in_list_view": 1
+    },
+    {
+      "fieldname": "mode_of_payment",
+      "label": "Mode of Payment",
+      "fieldtype": "Link",
+      "options": "Mode of Payment",
+      "reqd": 1,
+      "in_list_view": 1
+    },
+    {
+      "fieldname": "channel",
+      "label": "Payment Hub Channel",
+      "fieldtype": "Select",
+      "options": "Cash\nManual / Non-Cash\nElectronic Payment\nPhysical Payment Terminal",
+      "reqd": 1,
+      "in_list_view": 1
+    },
+    {
+      "fieldname": "provider_account",
+      "label": "Provider Account",
+      "fieldtype": "Link",
+      "options": "Payment Provider Account",
+      "in_list_view": 1,
+      "depends_on": "eval:['Electronic Payment','Physical Payment Terminal'].includes(doc.channel)"
+    },
+    {
+      "fieldname": "payment_terminal",
+      "label": "Payment Terminal",
+      "fieldtype": "Link",
+      "options": "Payment Terminal",
+      "in_list_view": 1,
+      "depends_on": "eval:doc.channel=='Physical Payment Terminal'"
+    },
+    {
+      "fieldname": "provider_payment_method",
+      "label": "Provider Payment Method",
+      "fieldtype": "Data",
+      "description": "Optional provider-specific method such as KNET, CARD, VISA, MASTERCARD. Leave blank to use the POS adapter default.",
+      "depends_on": "eval:['Electronic Payment','Physical Payment Terminal'].includes(doc.channel)"
+    },
+    {
+      "fieldname": "scope_section",
+      "label": "Optional Scope",
+      "fieldtype": "Section Break"
+    },
+    {
+      "fieldname": "company",
+      "label": "Company",
+      "fieldtype": "Link",
+      "options": "Company"
+    },
+    {
+      "fieldname": "pos_profile",
+      "label": "POS Profile (blank = All)",
+      "fieldtype": "Link",
+      "options": "POS Profile",
+      "in_list_view": 1,
+      "description": "Leave blank to apply this mapping to all POS Profiles. Set a profile only when that store/profile needs a different provider or terminal."
+    },
+    {
+      "fieldname": "priority",
+      "label": "Priority",
+      "fieldtype": "Int",
+      "default": "10",
+      "description": "Lower number wins when multiple mappings have the same specificity."
+    }
+  ]
+}

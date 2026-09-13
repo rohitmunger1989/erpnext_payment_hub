@@ -12,6 +12,9 @@
     "verify_by_status_api",
     "auto_reconcile",
     "pos_section",
+    "payment_method_mapping_section",
+    "payment_method_mappings",
+    "legacy_payment_defaults_section",
     "online_provider",
     "physical_terminal_provider",
     "cash_mode_of_payment",
@@ -76,32 +79,51 @@
       "fieldtype": "Section Break"
     },
     {
+      "fieldname": "payment_method_mapping_section",
+      "label": "Payment Method Routing",
+      "fieldtype": "Section Break"
+    },
+    {
+      "fieldname": "payment_method_mappings",
+      "label": "Payment Method Mappings",
+      "fieldtype": "Table",
+      "options": "Payment Hub Mode Mapping",
+      "description": "Map any ERPNext Mode of Payment to Cash, Manual / Non-Cash, Electronic Payment, or Physical Payment Terminal. Blank POS Profile applies to all profiles. Mappings take priority over the legacy defaults below."
+    },
+    {
+      "fieldname": "legacy_payment_defaults_section",
+      "label": "Legacy / Fallback Defaults",
+      "fieldtype": "Section Break",
+      "description": "Used only when a Mode of Payment has no row in Payment Method Mappings.",
+      "collapsible": 1
+    },
+    {
       "fieldname": "online_provider",
-      "label": "Online / WhatsApp Payment Provider",
+      "label": "Legacy Online / WhatsApp Provider (Fallback)",
       "fieldtype": "Link",
       "options": "Payment Provider Account"
     },
     {
       "fieldname": "physical_terminal_provider",
-      "label": "Physical Terminal Provider",
+      "label": "Legacy Physical Terminal Provider (Fallback)",
       "fieldtype": "Link",
       "options": "Payment Provider Account"
     },
     {
       "fieldname": "cash_mode_of_payment",
-      "label": "Cash Mode of Payment",
+      "label": "Legacy Cash Mode of Payment (Fallback)",
       "fieldtype": "Data",
       "default": "Cash"
     },
     {
       "fieldname": "physical_mode_of_payment",
-      "label": "Physical Terminal Mode of Payment",
+      "label": "Legacy Physical Terminal Mode (Fallback)",
       "fieldtype": "Data",
       "default": "Physical Payment Terminal"
     },
     {
       "fieldname": "electronic_mode_of_payment",
-      "label": "Electronic Payment Mode of Payment",
+      "label": "Legacy Electronic Payment Mode (Fallback)",
       "fieldtype": "Data",
       "default": "Electronic Payment"
     },
@@ -127,10 +149,10 @@
     },
     {
       "fieldname": "payment_link_expiry_minutes",
-      "label": "Gateway Payment Link Expiry (Minutes)",
+      "label": "Fallback Payment Link Lifetime (Minutes)",
       "fieldtype": "Int",
-      "default": "30",
-      "description": "Local expected lifetime of one gateway payment attempt. Provider limits still apply; a failed/expired attempt can be replaced with a new link while the POS sale remains recoverable."
+      "default": "1440",
+      "description": "Fallback lifetime used only when a payment provider does not return its own expiry. Provider-reported expiry always wins. This setting is configurable; use 1440 for a 24-hour fallback where your provider supports it."
     },
     {
       "fieldname": "pending_sale_retention_hours",

@@ -17,7 +17,8 @@
     "merchant_id",
     "webhook_secret",
     "terminal_id",
-    "base_url_override"
+    "base_url_override",
+    "payment_link_expiry_minutes"
   ],
   "fields": [
     {
@@ -89,6 +90,12 @@
       "label": "Base URL Override",
       "fieldtype": "Data",
       "description": "Optional. Required for UPayments production until the live API base URL is confirmed for your merchant account."
+    },
+    {
+      "fieldname": "payment_link_expiry_minutes",
+      "label": "Fallback Payment Link Lifetime (Minutes)",
+      "fieldtype": "Int",
+      "description": "Optional account-specific fallback. Leave blank/0 to use Payment Hub Settings. Provider-reported expiry always overrides this value."
     }
   ],
   "permissions": [

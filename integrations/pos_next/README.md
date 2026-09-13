@@ -1,14 +1,34 @@
 # POSNext integration compatibility
 
-ERPNext Payment Hub v0.6.5 supports multiple POSNext source bases through version-specific frontend patches.
+ERPNext Payment Hub v0.6.6 supports POSNext v2.0.0 / `e0a52c5` with mapping-aware payment routing.
 
-## POSNext v2.0.0 — e0a52c5
+## Current POSNext v2.0.0 — e0a52c5
 
-Use:
+For a **clean** POSNext v2.0.0 checkout, use:
 
-`pos_next_payment_hub_v0.6.5_posnext_v2.0.0_e0a52c5.patch`
+`pos_next_payment_hub_v0.6.6_posnext_v2.0.0_e0a52c5.patch`
 
-Expected clean source:
+For a POSNext checkout that already has the Payment Hub **v0.6.5** adapter applied, use the smaller incremental patch:
+
+`pos_next_payment_hub_v0.6.6_from_v0.6.5.patch`
+
+Do not apply both. Always run `git apply --check` first.
+
+### v0.6.6 routing behavior
+
+The adapter reads `payment_method_mappings` from `erpnext_payment_hub.pos.api.get_pos_payment_config`. This means any ERPNext Mode of Payment name can be mapped to an internal Payment Hub channel:
+
+- `Tap Payment` → Electronic Payment → Tap provider account
+- `UPayment` → Electronic Payment → UPayments provider account
+- `TAP Terminal` → Physical Payment Terminal → Tap terminal/provider mapping
+- `UPay Terminal` → Physical Payment Terminal → UPayments terminal/provider mapping
+- custom Cash modes → Cash
+
+Electronic and physical-terminal mappings are resolved by the backend; the visible ERPNext Mode of Payment name is never used as a provider-name guess.
+
+> Physical-terminal charging requires the selected provider class to implement its SmartPOS/ECR `create_terminal_payment` adapter. The routing/mapping is included in v0.6.6, but provider-specific terminal protocols still require the merchant/provider terminal API specification.
+
+### Expected source check
 
 ```bash
 cd ~/frappe-bench/apps/pos_next
@@ -17,32 +37,14 @@ git rev-parse --short HEAD
 git describe --tags --always
 ```
 
-Expected commit/tag:
+Clean v2.0.0 expected base:
 
 ```text
 e0a52c5
 v2.0.0
 ```
 
-Apply only after the safety check succeeds:
-
-```bash
-git apply --check pos_next_payment_hub_v0.6.5_posnext_v2.0.0_e0a52c5.patch
-git apply pos_next_payment_hub_v0.6.5_posnext_v2.0.0_e0a52c5.patch
-```
-
-The v2.0.0 patch changes only:
-
-- `POS/src/components/invoices/InvoiceDetailDialog.vue`
-- `POS/src/components/pos/POSHeader.vue`
-- `POS/src/components/sale/PaymentDialog.vue`
-- `POS/src/components/sale/PaymentHubPendingDialog.vue` (new)
-- `POS/src/components/sale/ReturnInvoiceDialog.vue`
-- `POS/src/pages/POSSale.vue`
-
-It does not modify `POS/components.d.ts` or `pos_next/fixtures/custom_docperm.json`.
-
-After applying:
+### Build after applying
 
 ```bash
 cd ~/frappe-bench/apps/pos_next/POS
@@ -56,18 +58,21 @@ bench restart
 
 ## Legacy POSNext — fbf8e80
 
-Use the legacy patch only for a checkout matching its older base:
+`pos_next_payment_hub_legacy_v0.6.4_fbf8e80.patch` is retained only for the older source base. Never apply it to v2.0.0.
 
-`pos_next_payment_hub_legacy_v0.6.4_fbf8e80.patch`
+## v0.6.7 adapters
 
-Do not apply the legacy patch to v2.0.0, and never apply both patches to the same POSNext checkout.
+For POSNext v2.0.0 (`e0a52c5`), v0.6.7 adds multi-provider split tender, custom mapped Electronic Payment link behavior, and cash-only overpayment/change handling.
 
-## Validation performed for the v2.0.0 patch
+- Clean v2.0.0 checkout: `pos_next_payment_hub_v0.6.7_posnext_v2.0.0_e0a52c5.patch`
+- Existing Payment Hub v0.6.6 POSNext adapter: `pos_next_payment_hub_v0.6.7_from_v0.6.6.patch`
 
-- generated against clean POSNext v2.0.0 / `e0a52c5`
-- `git diff --check` passed
-- JavaScript in all changed Vue script blocks passed `node --check`
-- patch `git apply --check` passed against a second untouched clean v2.0.0 copy
-- applied output hashes matched the adapted source for all six files
+Do not apply both patches.
 
-A full Vite build was not run in the packaging environment because the clean git archive does not include `node_modules`; run the build commands above on the ERPNext/POSNext server after applying.
+## v0.6.8 adapter
+
+The v0.6.8 POSNext incremental adapter adds `Manual / Non-Cash` mapping awareness so cheque/bank Modes of Payment can participate safely in a mixed Payment Hub checkout together with electronic links or physical terminals. Cash remains the only tender allowed to generate change.
+
+Files:
+- Existing Payment Hub v0.6.7 POSNext adapter: `pos_next_payment_hub_v0.6.8_from_v0.6.7.patch`
+- Clean POSNext v2.0.0 (`e0a52c5`): `pos_next_payment_hub_v0.6.8_posnext_v2.0.0_e0a52c5.patch`
