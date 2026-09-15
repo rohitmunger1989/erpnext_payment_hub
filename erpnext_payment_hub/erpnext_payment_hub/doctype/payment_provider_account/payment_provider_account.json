@@ -95,7 +95,7 @@
       "fieldname": "payment_link_expiry_minutes",
       "label": "Fallback Payment Link Lifetime (Minutes)",
       "fieldtype": "Int",
-      "description": "Optional account-specific fallback. Leave blank/0 to use Payment Hub Settings. Provider-reported expiry always overrides this value."
+      "description": "Optional account-specific fallback. Provider-reported expiry always wins. Leave blank/0 to use Payment Hub Settings; if both are blank/0, Payment Hub relies on the provider's native/default expiry behavior."
     }
   ],
   "permissions": [

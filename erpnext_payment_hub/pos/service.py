@@ -53,6 +53,90 @@ def get_settings():
     return frappe.get_single("Payment Hub Settings")
 
 
+def repair_stale_invoice_reference(session):
+    """Clear a missing draft invoice link while preserving the saved POS payload.
+
+    Draft Sales Invoices may be deleted by POS cleanup or by an administrator while
+    a Payment Hub session is still recoverable.  A dangling Dynamic Link prevents
+    *any* later ``session.save()`` because Frappe validates links first.  Non-finalized
+    sessions are safe to repair because ``draft_payload`` remains the source used to
+    rebuild a fresh draft.  Finalized sessions are deliberately never repaired here;
+    a missing final invoice is an accounting integrity error that must stay visible.
+    """
+    invoice_name = getattr(session, "invoice_name", None)
+    if not invoice_name or bool(getattr(session, "finalized", 0)):
+        return None
+
+    invoice_doctype = getattr(session, "invoice_doctype", None) or "Sales Invoice"
+    if frappe.db.exists(invoice_doctype, invoice_name):
+        return None
+
+    stale_reference = f"{invoice_doctype} {invoice_name}"
+    session.invoice_name = None
+    if hasattr(session, "preflight_validated_at"):
+        session.preflight_validated_at = None
+
+    values = {"invoice_name": None}
+    if frappe.db.has_column("POS Payment Session", "preflight_validated_at"):
+        values["preflight_validated_at"] = None
+    frappe.db.set_value(
+        "POS Payment Session",
+        session.name,
+        values,
+        update_modified=False,
+    )
+    return stale_reference
+
+
+def allocation_link_deadline(allocation):
+    """Return the local/provider-aware deadline for an electronic payment attempt."""
+    expires_at = getattr(allocation, "expires_at", None) or (
+        allocation.get("expires_at") if hasattr(allocation, "get") else None
+    )
+    if expires_at:
+        return get_datetime(expires_at)
+
+    settings = get_settings()
+    provider_account = getattr(allocation, "provider_account", None) or (
+        allocation.get("provider_account") if hasattr(allocation, "get") else None
+    )
+
+    minutes = 0
+    if provider_account and frappe.db.exists("Payment Provider Account", provider_account):
+        account_minutes = frappe.db.get_value(
+            "Payment Provider Account", provider_account, "payment_link_expiry_minutes"
+        )
+        try:
+            minutes = int(account_minutes or 0)
+        except (TypeError, ValueError):
+            minutes = 0
+
+    if minutes <= 0:
+        try:
+            minutes = int(getattr(settings, "payment_link_expiry_minutes", 0) or 0)
+        except (TypeError, ValueError):
+            minutes = 0
+
+    # Blank/0 means there is intentionally no Payment Hub-imposed fallback.
+    # In that case the provider's own/native expiry and status API remain the source
+    # of truth. New provider responses that expose an expiry already persist it in
+    # allocation.expires_at and return near the top of this function.
+    if minutes <= 0:
+        return None
+
+    creation = getattr(allocation, "creation", None) or (
+        allocation.get("creation") if hasattr(allocation, "get") else None
+    )
+    if not creation:
+        return None
+    return add_to_date(get_datetime(creation), minutes=minutes)
+
+
+def allocation_link_expired(allocation, now=None):
+    deadline = allocation_link_deadline(allocation)
+    return bool(deadline and deadline <= (now or now_datetime()))
+
+
 def allocation_rows(session_name):
     return frappe.get_all(
         "POS Payment Allocation",
@@ -94,6 +178,7 @@ def recalculate_session(session_or_name, *, publish=True):
         if isinstance(session_or_name, str)
         else session_or_name
     )
+    repair_stale_invoice_reference(session)
 
     for attempt in range(3):
         if attempt:
@@ -374,12 +459,12 @@ def expire_stale_pos_payments(limit=100):
     settings = get_settings()
     if not bool(getattr(settings, "auto_expire_pending_sales", 1)):
         return
-    minutes = max(1, int(getattr(settings, "payment_link_expiry_minutes", 1440) or 1440))
     now = now_datetime()
-    cutoff = add_to_date(now, minutes=-minutes)
 
-    # New allocations carry an explicit provider-link deadline. Legacy rows use
-    # creation + the configured link lifetime.
+    # New allocations normally carry a provider-reported or explicit fallback
+    # deadline. Older rows may have no expires_at, so resolve those individually
+    # through allocation_link_deadline(). If both provider-account and global
+    # fallback are blank/0, no synthetic deadline is created for that legacy row.
     explicit = frappe.get_all(
         "POS Payment Allocation",
         filters={
@@ -391,18 +476,43 @@ def expire_stale_pos_payments(limit=100):
         order_by="creation asc",
         limit=int(limit or 100),
     )
-    legacy = frappe.get_all(
-        "POS Payment Allocation",
-        filters={
-            "status": "Waiting",
-            "channel": "Electronic Payment",
-            "expires_at": ["is", "not set"],
-            "creation": ["<", cutoff],
-        },
-        pluck="name",
-        order_by="creation asc",
-        limit=int(limit or 100),
+    try:
+        global_fallback = int(getattr(settings, "payment_link_expiry_minutes", 0) or 0)
+    except (TypeError, ValueError):
+        global_fallback = 0
+
+    legacy_filters = {
+        "status": "Waiting",
+        "channel": "Electronic Payment",
+        "expires_at": ["is", "not set"],
+    }
+    if global_fallback <= 0:
+        provider_accounts_with_fallback = frappe.get_all(
+            "Payment Provider Account",
+            filters={"payment_link_expiry_minutes": [">", 0]},
+            pluck="name",
+        )
+        if provider_accounts_with_fallback:
+            legacy_filters["provider_account"] = ["in", provider_accounts_with_fallback]
+        else:
+            legacy_filters = None
+
+    legacy_candidates = (
+        frappe.get_all(
+            "POS Payment Allocation",
+            filters=legacy_filters,
+            fields=["name", "provider_account", "creation", "expires_at"],
+            order_by="creation asc",
+            limit=max(int(limit or 100) * 5, int(limit or 100)),
+        )
+        if legacy_filters
+        else []
     )
+    legacy = [
+        row.name
+        for row in legacy_candidates
+        if allocation_link_expired(row, now=now)
+    ][: int(limit or 100)]
     names = list(dict.fromkeys([*explicit, *legacy]))[: int(limit or 100)]
     for name in names:
         try:
@@ -427,10 +537,12 @@ def expire_stale_pos_payments(limit=100):
 
 
 def expire_stale_pos_sessions(limit=100):
-    """Expire unpaid sessions only after the recovery window.
+    """Expire unpaid sessions only after recovery and a final provider check.
 
-    Sessions containing captured money are intentionally excluded so a cashier can
-    always recover/finalize or refund money that was actually collected.
+    Captured money is never expired.  A remotely Pending electronic attempt is
+    retained while its stored/provider-aware link deadline is still active.  If
+    the provider still reports Pending *after* that deadline, the old allocation
+    is closed locally as Expired and the PPS may then expire.
     """
     settings = get_settings()
     hours = max(1, int(getattr(settings, "pending_sale_retention_hours", 24) or 24))
@@ -466,8 +578,54 @@ def expire_stale_pos_sessions(limit=100):
     for name in list(dict.fromkeys([*explicit, *legacy]))[: int(limit or 100)]:
         try:
             session = frappe.get_doc("POS Payment Session", name)
+            repair_stale_invoice_reference(session)
+
+            safe_to_expire = True
+            waiting_rows = [row for row in allocation_rows(session.name) if row.status == "Waiting"]
+            for row in waiting_rows:
+                # Never expire a provider-backed payment without one final
+                # server-to-server status refresh.  If the provider is
+                # unreachable, fail closed and leave the session recoverable.
+                if row.gateway_transaction:
+                    try:
+                        txn = frappe.get_doc("Gateway Transaction", row.gateway_transaction)
+                        account = get_provider_account(txn.provider_account)
+                        provider = get_provider(account)
+                        normalized = provider.get_payment_status(txn)
+                        update_transaction_from_status(txn, normalized)
+                    except Exception:
+                        safe_to_expire = False
+                        frappe.log_error(
+                            title=f"Payment Hub final expiry status check failed: {row.name}",
+                            message=frappe.get_traceback(),
+                        )
+                        break
+
+                allocation = frappe.get_doc("POS Payment Allocation", row.name)
+                if allocation.status != "Waiting":
+                    continue
+
+                if allocation.channel == "Electronic Payment" and allocation_link_expired(allocation, now=now):
+                    allocation.status = "Expired"
+                    allocation.failed_reason = allocation.failed_reason or "Payment link lifetime expired."
+                    allocation.save(ignore_permissions=True)
+                else:
+                    # A still-active provider/terminal attempt must not be orphaned
+                    # just because the PPS recovery timer elapsed.
+                    safe_to_expire = False
+                    break
+
+            if not safe_to_expire:
+                continue
+
+            session.reload()
+            repair_stale_invoice_reference(session)
+            session = recalculate_session(session, publish=False)
+            if flt(session.confirmed_paid_amount, 3) > 0 or flt(session.pending_amount, 3) > 0:
+                continue
+
             session.status = "Expired"
-            session.last_error = "Pending sale recovery window expired."
+            session.last_error = "Pending sale recovery window expired after final payment-status check."
             session.save(ignore_permissions=True)
             _publish_session(session)
         except Exception:

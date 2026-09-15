@@ -151,8 +151,7 @@
       "fieldname": "payment_link_expiry_minutes",
       "label": "Fallback Payment Link Lifetime (Minutes)",
       "fieldtype": "Int",
-      "default": "1440",
-      "description": "Fallback lifetime used only when a payment provider does not return its own expiry. Provider-reported expiry always wins. This setting is configurable; use 1440 for a 24-hour fallback where your provider supports it."
+      "description": "Optional global fallback used only when a payment provider does not return its own expiry. Provider-reported expiry always wins. Leave blank/0 to use the provider's native/default expiry behavior."
     },
     {
       "fieldname": "pending_sale_retention_hours",

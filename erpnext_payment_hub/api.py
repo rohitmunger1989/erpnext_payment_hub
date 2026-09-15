@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from urllib.parse import urlencode
+
 import frappe
 from frappe.exceptions import TimestampMismatchError
 from frappe.utils import flt
@@ -15,6 +17,35 @@ from erpnext_payment_hub.gateway import (
     resolve_pos_station,
     touch_pos_station,
 )
+
+
+
+
+def _payment_return_redirect(status=None, transaction=None, message=None):
+    """Redirect hosted-checkout browser returns to a customer-friendly status page."""
+    normalized = (status or "").strip().lower()
+    if normalized in ("captured", "paid", "success", "successful"):
+        state = "paid"
+    elif normalized in ("failed", "declined", "abandoned", "cancelled", "canceled"):
+        state = "failed"
+    elif normalized in ("expired",):
+        state = "expired"
+    elif normalized in ("pending", "initiated", "waiting"):
+        state = "pending"
+    else:
+        state = "invalid"
+
+    params = {"state": state}
+    if transaction:
+        params["reference"] = transaction
+    if message:
+        params["message"] = message
+
+    frappe.local.response["type"] = "redirect"
+    frappe.local.response["location"] = (
+        f"{frappe.utils.get_url()}/payment_hub_status?{urlencode(params)}"
+    )
+    return None
 
 
 def _default_return_url():
@@ -310,11 +341,7 @@ def payment_return(**kwargs):
 
             doc = frappe.get_doc("Gateway Transaction", name)
             update_transaction_from_status(doc, normalized)
-            return {
-                "message": "MyFatoorah payment return received and verified.",
-                "transaction": doc.name,
-                "status": doc.status,
-            }
+            return _payment_return_redirect(doc.status, doc.name)
 
     # Tap redirect flow returns the Charge ID as tap_id.
     tap_id = params.get("tap_id")
@@ -333,11 +360,7 @@ def payment_return(**kwargs):
             account = get_provider_account(doc.provider_account)
             normalized = get_provider(account).get_payment_status(doc)
             update_transaction_from_status(doc, normalized)
-            return {
-                "message": "Tap payment return received and verified.",
-                "transaction": doc.name,
-                "status": doc.status,
-            }
+            return _payment_return_redirect(doc.status, doc.name)
 
     track_id = params.get("track_id") or params.get("trackId")
     requested_order_id = (
@@ -367,13 +390,9 @@ def payment_return(**kwargs):
             normalized = get_provider(account).get_payment_status(doc)
             update_transaction_from_status(doc, normalized)
 
-            return {
-                "message": "Payment return received and verified.",
-                "transaction": doc.name,
-                "status": doc.status,
-            }
+            return _payment_return_redirect(doc.status, doc.name)
 
-    return {
-        "message": "Payment return received. ERPNext could not automatically match the transaction yet.",
-        "parameters": params,
-    }
+    return _payment_return_redirect(
+        "invalid",
+        message="We could not match this payment return to a Payment Hub transaction. Please contact the cashier.",
+    )

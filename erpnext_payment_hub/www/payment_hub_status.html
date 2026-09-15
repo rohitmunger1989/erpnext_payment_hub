@@ -1,0 +1,35 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <meta name="robots" content="noindex,nofollow">
+  <title>Payment Status</title>
+  <style>
+    body{font-family:Arial,sans-serif;background:#f7f7f7;margin:0;color:#1f2937}
+    .wrap{max-width:560px;margin:8vh auto;padding:24px}
+    .card{background:#fff;border:1px solid #e5e7eb;border-radius:14px;padding:30px;box-shadow:0 8px 24px rgba(0,0,0,.06)}
+    h1{font-size:24px;margin:0 0 14px}.msg{font-size:16px;line-height:1.6;margin:0 0 12px}.ref{font-size:13px;color:#6b7280;margin-top:18px}
+  </style>
+</head>
+<body>
+  <div class="wrap"><div class="card"><h1 id="title">Payment Status</h1><p id="message" class="msg">Checking payment status…</p><p id="reference" class="ref"></p></div></div>
+<script>
+(function(){
+  const p=new URLSearchParams(window.location.search), state=p.get('state')||'error', ref=p.get('reference')||'', custom=p.get('message')||'';
+  const data={
+    paid:['Payment successful','Your payment has been received successfully. You may close this page.'],
+    pending:['Payment pending','Your payment is still being confirmed. Please do not make another payment until the cashier verifies the status.'],
+    failed:['Payment unsuccessful','This payment attempt was not completed. Please contact the cashier if you need a new payment link.'],
+    expired:['Payment link expired','This payment link is no longer active. Please contact the cashier if you need a new payment link.'],
+    invalid:['Payment return not recognized','We could not match this return to a Payment Hub transaction. Please contact the cashier.'],
+    error:['Payment unavailable','We could not confirm the payment status right now. Please contact the cashier or try again shortly.']
+  };
+  const d=data[state]||data.error;
+  document.getElementById('title').textContent=d[0];
+  document.getElementById('message').textContent=custom||d[1];
+  document.getElementById('reference').textContent=ref ? 'Reference: '+ref : '';
+})();
+</script>
+</body>
+</html>

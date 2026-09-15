@@ -189,6 +189,7 @@ def create_or_update_invoice(
     invoice_payload=None,
     submit=True,
     print_format=None,
+    completion_pos_opening_shift=None,
 ):
     if invoice_name:
         if not frappe.db.exists(invoice_doctype, invoice_name):
@@ -212,8 +213,14 @@ def create_or_update_invoice(
 
     rows = captured_payment_rows(session.name)
     if doc.docstatus == 0:
-        if frappe.get_meta(doc.doctype).has_field("is_pos"):
+        meta = frappe.get_meta(doc.doctype)
+        if meta.has_field("is_pos"):
             doc.is_pos = 1
+        # The PPS keeps its original shift for audit.  If payment is captured
+        # after that shift has closed, completion must post the invoice into the
+        # caller's currently-open shift instead of reopening/mutating history.
+        if completion_pos_opening_shift and meta.has_field("posa_pos_opening_shift"):
+            doc.set("posa_pos_opening_shift", completion_pos_opening_shift)
         payments_attached = _set_invoice_payments(doc, rows)
         # Payment Hub stores only the cash amount applied to the invoice as a
         # payment allocation. Preserve the physical tender/change separately so
