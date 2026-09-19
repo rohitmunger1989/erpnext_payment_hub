@@ -1,0 +1,1953 @@
+diff --git a/POS/src/components/invoices/InvoiceDetailDialog.vue b/POS/src/components/invoices/InvoiceDetailDialog.vue
+index 8b4c77c..5ecf6a1 100644
+--- a/POS/src/components/invoices/InvoiceDetailDialog.vue
++++ b/POS/src/components/invoices/InvoiceDetailDialog.vue
+@@ -66,9 +66,49 @@
+ 					</div>
+ 				</div>
+ 
++				<!-- Payment Hub refund result -->
++				<div
++					v-if="invoiceData.is_return && paymentHubRefundInfo?.managed"
++					:class="[
++						'rounded-lg p-4 border',
++						paymentHubRefundInfo.all_complete
++							? 'bg-gradient-to-r rtl:bg-gradient-to-l from-green-50 to-emerald-50 border-green-200'
++							: paymentHubRefundInfo.needs_review
++								? 'bg-red-50 border-red-200'
++								: 'bg-amber-50 border-amber-200',
++					]"
++				>
++					<div class="flex items-start gap-3">
++						<div class="w-8 h-8 rounded-full bg-white/70 flex items-center justify-center flex-shrink-0 border">
++							<svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
++								<path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z"/>
++							</svg>
++						</div>
++						<div class="text-start flex-1 min-w-0">
++							<h4 class="text-sm font-semibold">
++								{{ paymentHubRefundInfo.all_complete ? __('Payment Hub Refund Completed') : paymentHubRefundInfo.needs_review ? __('Refund Review Required') : __('Refund Pending') }}
++							</h4>
++							<p class="text-xs mt-1 opacity-80">{{ __('Refund is tied to the original payment source and provider transaction.') }}</p>
++							<div class="mt-3 flex flex-col gap-2">
++								<div v-for="row in paymentHubRefundInfo.rows" :key="row.name" class="rounded-md border bg-white/70 px-3 py-2">
++									<div class="flex items-center justify-between gap-3">
++										<div class="min-w-0">
++											<div class="text-xs font-semibold text-gray-900">{{ row.actual_refund_mode_of_payment || row.mode_of_payment }}</div>
++											<div class="text-[11px] text-gray-600 truncate"><template v-if="row.is_override">{{ __('Override from') }} {{ row.provider ? `${row.provider}${row.actual_payment_method ? ' • ' + row.actual_payment_method : ''}` : row.channel }} {{ __('to') }} {{ row.actual_refund_channel }}</template><template v-else>{{ row.provider ? `${row.provider}${row.actual_payment_method ? ' • ' + row.actual_payment_method : ''}` : row.channel }}</template></div>
++										</div>
++										<div class="text-end flex-shrink-0"><div class="text-sm font-bold text-gray-900">{{ formatCurrency(-Math.abs(row.amount || 0)) }}</div><div class="text-[10px] text-gray-500">{{ __(row.status) }}</div></div>
++									</div>
++									<div v-if="row.refund_gateway_transaction" class="text-[10px] text-gray-500 mt-1">{{ __('Refund Transaction:') }} {{ row.refund_gateway_transaction }}</div>
++									<div v-if="row.authorized_by" class="text-[10px] text-violet-700 mt-1">{{ __('Authorized By:') }} {{ row.authorized_by }}<span v-if="row.override_reason"> · {{ row.override_reason }}</span></div>
++								</div>
++							</div>
++						</div>
++					</div>
++				</div>
++
+ 				<!-- Return Type Notice: Added to Customer Credit (no payments, negative outstanding) -->
+ 				<div
+-					v-if="invoiceData.is_return && isAddedToCustomerCredit"
++					v-if="invoiceData.is_return && !paymentHubRefundInfo?.managed && isAddedToCustomerCredit"
+ 					class="bg-gradient-to-r rtl:bg-gradient-to-l from-blue-50 to-indigo-50 rounded-lg p-4 border border-blue-200"
+ 				>
+ 					<div class="flex items-start gap-3">
+@@ -104,9 +144,9 @@
+ 					</div>
+ 				</div>
+ 
+-				<!-- Return Type Notice: Cash Refund (has payments) -->
++				<!-- Return Type Notice: Recorded refund for non-Payment-Hub returns -->
+ 				<div
+-					v-else-if="invoiceData.is_return && isCashRefund"
++					v-else-if="invoiceData.is_return && !paymentHubRefundInfo?.managed && hasReturnPayments"
+ 					class="bg-gradient-to-r rtl:bg-gradient-to-l from-green-50 to-emerald-50 rounded-lg p-4 border border-green-200"
+ 				>
+ 					<div class="flex items-start gap-3">
+@@ -129,10 +169,10 @@
+ 						</div>
+ 						<div class="text-start flex-1">
+ 							<h4 class="text-sm font-semibold text-green-900">
+-								{{ __("Cash Refund") }}
++								{{ isCashRefund ? __("Cash Refund") : __("Refund Recorded") }}
+ 							</h4>
+ 							<p class="text-xs text-green-700 mt-1">
+-								{{ __("The customer received a cash refund for this return.") }}
++								{{ isCashRefund ? __("The customer received a cash refund for this return.") : __("A refund payment row was recorded on this return. Provider settlement is not implied unless Payment Hub details are shown.") }}
+ 							</p>
+ 						</div>
+ 					</div>
+@@ -514,6 +554,7 @@ const emit = defineEmits(["update:modelValue", "print-invoice"]);
+ const show = ref(props.modelValue);
+ const loading = ref(false);
+ const invoiceData = ref(null);
++const paymentHubRefundInfo = ref(null);
+ 
+ // Computed: Check if this is a credit sale (Pay on Account - no payments, full outstanding)
+ const isCreditSale = computed(() => {
+@@ -538,15 +579,22 @@ const isAddedToCustomerCredit = computed(() => {
+ 	return (hasNoPayments || totalPaid < 0.01) && hasNegativeOutstanding;
+ });
+ 
+-// Computed: Check if this return was a cash refund (has payments)
+-const isCashRefund = computed(() => {
++const hasReturnPayments = computed(() => {
+ 	if (!invoiceData.value || !invoiceData.value.is_return) return false;
+ 	const totalPaid =
+ 		invoiceData.value.payments?.reduce((sum, p) => sum + Math.abs(p.amount || 0), 0) || 0;
+-	// Cash refund if payments were made (refund given)
+ 	return totalPaid >= 0.01;
+ });
+ 
++// Only label a legacy/non-Payment-Hub return as Cash Refund when every
++// recorded refund payment is actually a cash mode.
++const isCashRefund = computed(() => {
++	if (!hasReturnPayments.value) return false;
++	return (invoiceData.value.payments || []).every((payment) =>
++		String(payment.mode_of_payment || "").toLowerCase().includes("cash")
++	);
++});
++
+ watch(
+ 	() => props.modelValue,
+ 	(val) => {
+@@ -562,6 +610,7 @@ watch(show, async (val) => {
+ 	if (!val) {
+ 		// Clear data when closing
+ 		invoiceData.value = null;
++		paymentHubRefundInfo.value = null;
+ 	} else {
+ 		// Ensure dialog appears above other dialogs
+ 		await nextTick();
+@@ -609,6 +658,17 @@ async function loadInvoiceDetails() {
+ 			}));
+ 		}
+ 		invoiceData.value = result;
++		paymentHubRefundInfo.value = null;
++		if (result?.is_return && result?.name) {
++			try {
++				const refundInfo = await call("erpnext_payment_hub.pos.refund.get_return_refund_status", {
++					return_invoice: result.name,
++				});
++				if (refundInfo?.managed) paymentHubRefundInfo.value = refundInfo;
++			} catch (refundError) {
++				log.debug("Payment Hub refund details unavailable:", refundError);
++			}
++		}
+ 	} catch (error) {
+ 		log.error("Error loading invoice details:", error);
+ 		invoiceData.value = null;
+diff --git a/POS/src/components/pos/POSHeader.vue b/POS/src/components/pos/POSHeader.vue
+index cd6d65d..d86b578 100644
+--- a/POS/src/components/pos/POSHeader.vue
++++ b/POS/src/components/pos/POSHeader.vue
+@@ -125,6 +125,26 @@
+ 						</span>
+ 					</button>
+ 
++					<!-- Payment Hub queue -->
++					<button
++						v-if="paymentHubEnabled && hasOpenShift && !isOffline"
++						@click="$emit('payment-hub-click')"
++						class="p-1.5 sm:p-2 hover:bg-gray-100 active:bg-gray-200 rounded-lg transition-colors relative touch-manipulation"
++						:title="__('Payment Hub: {0} waiting, {1} paid', [paymentHubPendingCount, paymentHubPaidCount])"
++						:aria-label="__('Open Payment Hub')"
++					>
++						<svg class="w-4 h-4 sm:w-5 sm:h-5" :class="paymentHubPaidCount > 0 ? 'text-green-600' : 'text-blue-600'" fill="none" stroke="currentColor" viewBox="0 0 24 24">
++							<path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M3 10h18M7 15h1m4 0h2m-9 5h14a2 2 0 002-2V6a2 2 0 00-2-2H5a2 2 0 00-2 2v12a2 2 0 002 2z"/>
++						</svg>
++						<span
++							v-if="paymentHubTotalCount > 0"
++							class="absolute -top-1 -end-1 text-white text-[10px] font-bold rounded-full min-w-[20px] h-5 px-1 flex items-center justify-center shadow-md"
++							:class="paymentHubPaidCount > 0 ? 'bg-green-600' : 'bg-blue-600'"
++						>
++							{{ paymentHubTotalCount }}
++						</span>
++					</button>
++
+ 					<!-- Cache Status Indicator -->
+ 					<div class="relative">
+ 						<button
+@@ -392,7 +412,7 @@ import StatusBadge from "@/components/common/StatusBadge.vue";
+ import UserMenu from "@/components/common/UserMenu.vue";
+ import LanguageSwitcher from "@/components/common/LanguageSwitcher.vue";
+ import { DEFAULT_LOCALE } from "@/utils/currency";
+-import { ref } from "vue";
++import { computed, ref } from "vue";
+ import { version } from "../../../package.json";
+ 
+ const showCacheTooltip = ref(false);
+@@ -407,6 +427,7 @@ const emit = defineEmits([
+ 	"menu-opened",
+ 	"menu-closed",
+ 	"clear-cache",
++	"payment-hub-click",
+ ]);
+ 
+ function handleClearCacheClick() {
+@@ -460,6 +481,22 @@ const props = defineProps({
+ 		type: Number,
+ 		default: 0,
+ 	},
++	paymentHubEnabled: {
++		type: Boolean,
++		default: false,
++	},
++	paymentHubPendingCount: {
++		type: Number,
++		default: 0,
++	},
++	paymentHubPaidCount: {
++		type: Number,
++		default: 0,
++	},
++	paymentHubFailedCount: {
++		type: Number,
++		default: 0,
++	},
+ 	isAnyDialogOpen: {
+ 		type: Boolean,
+ 		default: false,
+@@ -490,6 +527,10 @@ const props = defineProps({
+ 	},
+ });
+ 
++const paymentHubTotalCount = computed(
++	() => props.paymentHubPendingCount + props.paymentHubPaidCount + props.paymentHubFailedCount
++);
++
+ // Cache status helpers
+ function getCacheIconColor() {
+ 	if (!props.cacheStats || props.cacheStats.items === 0) {
+diff --git a/POS/src/components/sale/PaymentDialog.vue b/POS/src/components/sale/PaymentDialog.vue
+index ee71d01..c93e0ca 100644
+--- a/POS/src/components/sale/PaymentDialog.vue
++++ b/POS/src/components/sale/PaymentDialog.vue
+@@ -1277,6 +1277,26 @@
+ 							{{ __("No payment methods available") }}
+ 						</div>
+ 
++						<!-- Payment Hub mobile number for asynchronous Electronic Payment -->
++						<div
++							v-if="paymentHubElectronicActive"
++							class="mt-2 rounded-lg border border-green-200 bg-green-50 p-2"
++						>
++							<label class="mb-1 block text-xs font-semibold text-green-800">
++								{{ __("WhatsApp payment mobile") }}
++							</label>
++							<input
++								v-model="paymentHubMobileNumber"
++								type="tel"
++								inputmode="tel"
++								class="h-9 w-full rounded-lg border border-green-300 bg-white px-3 text-sm focus:border-green-500 focus:outline-none focus:ring-1 focus:ring-green-500"
++								:placeholder="__('Example: +96550835135')"
++							/>
++							<p class="mt-1 text-[10px] text-green-700">
++								{{ __("The secure payment link will be sent to this number.") }}
++							</p>
++						</div>
++
+ 						<!-- Exact Amount Mode Info Banner -->
+ 						<div
+ 							v-if="
+@@ -1324,8 +1344,8 @@
+ 								>
+ 									{{
+ 										!isExactAmountValid
+-											? __("Total must equal invoice amount")
+-											: __("Payment amount is correct")
++											? __("Non-cash payments cannot exceed invoice total")
++											: __("Non-cash limit is valid; cash may create change")
+ 									}}
+ 								</span>
+ 							</div>
+@@ -1341,7 +1361,7 @@
+ 						<div class="text-start text-xs font-medium text-gray-600 mb-1.5">
+ 							{{
+ 								isExactAmountModeActive && !isCashPaymentMethod(lastSelectedMethod)
+-									? __("Exact amount only")
++									? __("Non-cash: up to invoice total")
+ 									: __("Quick amounts for {0}", [
+ 											__(lastSelectedMethod.mode_of_payment),
+ 									  ])
+@@ -2097,6 +2117,10 @@ const props = defineProps({
+ 		type: Number,
+ 		default: 0,
+ 	},
++	paymentHubConfig: {
++		type: Object,
++		default: () => ({}),
++	},
+ });
+ 
+ const emit = defineEmits([
+@@ -2122,6 +2146,7 @@ const receivableAccounts = ref([]);
+ const selectedReceivableAccount = ref("");
+ const customAmount = ref("");
+ const paymentEntries = ref([]);
++const paymentHubMobileNumber = ref("");
+ const customerCredit = ref([]);
+ const customerBalance = ref({
+ 	total_outstanding: 0,
+@@ -2388,6 +2413,10 @@ function isWalletPaymentMethod(methodName) {
+ // Check if a payment method is a cash payment (allows overpayment/change)
+ function isCashPaymentMethod(method) {
+ 	if (!method) return false;
++	// Payment Hub mapping takes priority, so a user-defined name can be Cash
++	// without relying on words in the Mode of Payment label.
++	const mappedChannel = paymentHubChannelForMode(method.mode_of_payment);
++	if (mappedChannel) return mappedChannel === "Cash";
+ 	// Check by account_type first (most reliable - from linked Account)
+ 	const accountType = (method.account_type || "").toLowerCase();
+ 	if (accountType === "cash") return true;
+@@ -2820,33 +2849,36 @@ const hasNonCashPayment = computed(() => {
+ 	});
+ });
+ 
++const nonCashPaidAmount = computed(() =>
++	roundCurrency(
++		paymentEntries.value
++			.filter((entry) => {
++				const method = paymentMethods.value.find(
++					(m) => m.mode_of_payment === entry.mode_of_payment
++				);
++				return method && !isCashPaymentMethod(method) && !entry.is_customer_credit;
++			})
++			.reduce((sum, entry) => sum + Number(entry.amount || 0), 0)
++	)
++);
++
+ // Check if current payment scenario allows overpayment (change)
+ const allowsOverpayment = computed(() => {
+-	// If exact amount mode is not active, allow overpayment
+-	if (!isExactAmountModeActive.value) return true;
+-
+-	// If no payments yet, default to allowing overpayment
++	// Change is always a cash-only concept. Bank/electronic/terminal payments
++	// are never allowed to create change, regardless of the Exact Amount setting.
+ 	if (paymentEntries.value.length === 0) return true;
+-
+-	// Cash only: allows overpayment
+-	if (hasCashPayment.value && !hasNonCashPayment.value) return true;
+-
+-	// Non-cash or mixed: no overpayment allowed
+-	return false;
++	return hasCashPayment.value;
+ });
+ 
+-// Check if current payment is valid according to exact amount rules
++// Universal tender safety rule: cumulative non-cash can never exceed the sale
++// total. Non-cash may be partial. Cash may exceed the remaining balance and the
++// difference is change due. This rule applies even when Exact Amount is disabled.
+ const isExactAmountValid = computed(() => {
+-	if (!isExactAmountModeActive.value) return true;
+-
+-	// If no payments, it's valid (nothing to validate yet)
+ 	if (paymentEntries.value.length === 0) return true;
+-
+-	// Cash only: always valid (allows overpayment)
+-	if (hasCashPayment.value && !hasNonCashPayment.value) return true;
+-
+-	// Non-cash or mixed: total paid must not exceed grand total
+-	return totalPaid.value <= roundCurrency(props.grandTotal);
++	if (nonCashPaidAmount.value > roundCurrency(props.grandTotal) + 0.001) return false;
++	if (!hasCashPayment.value && totalPaid.value > roundCurrency(props.grandTotal) + 0.001)
++		return false;
++	return true;
+ });
+ 
+ const canComplete = computed(() => {
+@@ -2880,6 +2912,11 @@ const canComplete = computed(() => {
+ });
+ 
+ const paymentButtonText = computed(() => {
++	if (hasPaymentHubElectronicEntry.value && hasPaymentHubPhysicalEntry.value) {
++		return __("Start Payments / Send Link");
++	}
++	if (hasPaymentHubElectronicEntry.value) return __("Send Payment Link");
++	if (hasPaymentHubPhysicalEntry.value) return __("Start Terminal Payment");
+ 	// Show "Complete Payment" if fully paid or write-off covers remaining
+ 	if (remainingAmount.value === 0 || (applyWriteOff.value && canWriteOff.value)) {
+ 		return __("Complete Payment");
+@@ -2901,11 +2938,9 @@ const { quickAmounts } = useQuickAmounts(remainingAmount, isLastMethodCash);
+ // Whether a quick amount button should be disabled in exact-amount mode
+ // Non-cash methods can only pay the exact remaining — no rounding allowed
+ function isQuickAmountDisabled(amount) {
+-	return (
+-		isExactAmountModeActive.value &&
+-		!isCashPaymentMethod(lastSelectedMethod.value) &&
+-		amount !== roundCurrency(remainingAmount.value)
+-	);
++	if (isCashPaymentMethod(lastSelectedMethod.value)) return false;
++	const maxNonCash = roundCurrency(props.grandTotal) - nonCashPaidAmount.value;
++	return Number(amount || 0) > maxNonCash + 0.001;
+ }
+ 
+ // Preload payment methods and sales persons when posProfile is set.
+@@ -2956,6 +2991,7 @@ watch(show, (newVal) => {
+ 		mobileCustomAmount.value = "";
+ 		lastSelectedMethod.value = null;
+ 		selectedReceivableAccount.value = "";
++		paymentHubMobileNumber.value = customerMobileValue();
+ 		customerCredit.value = [];
+ 		// Refetch credit sources every time the dialog opens. The pre-fetch
+ 		// watcher only fires when customer/company changes, so reopening the
+@@ -3015,6 +3051,91 @@ watch(show, (newVal) => {
+ 	}
+ });
+ 
++function normalizePaymentHubMode(value) {
++	return String(value || "").trim().toLowerCase();
++}
++
++function getPaymentHubMapping(value) {
++	const normalized = normalizePaymentHubMode(value);
++	return (props.paymentHubConfig?.payment_method_mappings || []).find(
++		(row) => normalizePaymentHubMode(row?.mode_of_payment) === normalized
++	);
++}
++
++function paymentHubChannelForMode(value) {
++	const mapping = getPaymentHubMapping(value);
++	if (mapping) return mapping.channel || null;
++	const normalized = normalizePaymentHubMode(value);
++	const legacyCash = props.paymentHubConfig?.cash_mode_of_payment || "Cash";
++	const legacyElectronic =
++		props.paymentHubConfig?.electronic_mode_of_payment || "Electronic Payment";
++	const legacyPhysical =
++		props.paymentHubConfig?.physical_mode_of_payment || "Physical Payment Terminal";
++	if (normalized === normalizePaymentHubMode(legacyCash) || normalized === "cash") return "Cash";
++	if (
++		normalized === normalizePaymentHubMode(legacyElectronic) ||
++		normalized === "electronic payment"
++	)
++		return "Electronic Payment";
++	if (
++		normalized === normalizePaymentHubMode(legacyPhysical) ||
++		normalized === "physical payment terminal"
++	)
++		return "Physical Payment Terminal";
++	return null;
++}
++
++function isPaymentHubElectronicModeName(value) {
++	return paymentHubChannelForMode(value) === "Electronic Payment";
++}
++
++function isPaymentHubPhysicalModeName(value) {
++	return paymentHubChannelForMode(value) === "Physical Payment Terminal";
++}
++
++function isPaymentHubElectronicMethod(method) {
++	return isPaymentHubElectronicModeName(method?.mode_of_payment);
++}
++
++function isPaymentHubPhysicalMethod(method) {
++	return isPaymentHubPhysicalModeName(method?.mode_of_payment);
++}
++
++const hasPaymentHubElectronicEntry = computed(() =>
++	paymentEntries.value.some(
++		(entry) => isPaymentHubElectronicModeName(entry.mode_of_payment) && Number(entry.amount || 0) > 0
++	)
++);
++
++const hasPaymentHubPhysicalEntry = computed(() =>
++	paymentEntries.value.some(
++		(entry) => isPaymentHubPhysicalModeName(entry.mode_of_payment) && Number(entry.amount || 0) > 0
++	)
++);
++
++const paymentHubElectronicActive = computed(
++	() => hasPaymentHubElectronicEntry.value || isPaymentHubElectronicMethod(lastSelectedMethod.value)
++);
++
++function customerMobileValue() {
++	if (!props.customer || typeof props.customer === "string") return "";
++	return (
++		props.customer.mobile_no ||
++		props.customer.mobile_number ||
++		props.customer.contact_mobile ||
++		props.customer.phone ||
++		""
++	);
++}
++
++function normalizedPaymentHubMobile() {
++	const raw = String(paymentHubMobileNumber.value || "").trim();
++	const digits = raw.replace(/\D/g, "");
++	if (digits.length === 8) return `+965${digits}`;
++	if (digits.length >= 10) return `+${digits}`;
++	return raw;
++}
++
+ // ===========================================
+ // Payment Method Press Handler (Long Press Support)
+ // Uses composable for clean, reusable press handling
+@@ -3120,38 +3241,18 @@ function quickAddPayment(method) {
+ 		}
+ 	}
+ 
+-	// Exact amount validation for non-cash payments
+-	if (isExactAmountModeActive.value && !isCashPaymentMethod(method)) {
+-		const currentNonCashTotal = paymentEntries.value
+-			.filter((entry) => {
+-				const m = paymentMethods.value.find(
+-					(pm) => pm.mode_of_payment === entry.mode_of_payment
+-				);
+-				return m && !isCashPaymentMethod(m) && !entry.is_customer_credit;
+-			})
+-			.reduce((sum, entry) => sum + (entry.amount || 0), 0);
+-
+-		const maxAllowed = roundCurrency(props.grandTotal) - currentNonCashTotal;
+-
++	// Non-cash can be partial, but cumulative non-cash can never exceed the sale total.
++	if (!isCashPaymentMethod(method)) {
++		const maxAllowed = roundCurrency(props.grandTotal) - nonCashPaidAmount.value;
+ 		if (maxAllowed <= 0) {
+-			showWarning(__("Cannot add more non-cash payments. Use cash for overpayment."));
++			showWarning(__("Non-cash payments already equal the invoice total."));
+ 			return;
+ 		}
+-
+-		// For quick add (long press), always use exact remaining amount
+-		amt = maxAllowed;
++		amt = Math.min(amt, maxAllowed);
+ 	}
+ 
+-	// For mixed payments in exact amount mode, validate total doesn't exceed grand total
+-	if (isExactAmountModeActive.value && hasNonCashPayment.value && isCashPaymentMethod(method)) {
+-		const maxAllowed = roundCurrency(props.grandTotal) - totalPaid.value;
+-		if (maxAllowed <= 0) {
+-			showInfo(__("Invoice fully paid. No additional payment needed."));
+-			return;
+-		}
+-		// For quick add (long press), use exact remaining to complete payment
+-		amt = maxAllowed;
+-	}
++	// Cash is intentionally allowed to exceed the remaining amount; the excess
++	// is returned as change even when electronic/terminal payments are present.
+ 
+ 	_upsertPaymentEntry(method, roundCurrency(amt));
+ 	log.debug("[PaymentDialog] Long press payment added:", method.mode_of_payment);
+@@ -3246,41 +3347,24 @@ async function addCustomPayment(method, amount) {
+ 		}
+ 	}
+ 
+-	// Exact amount validation for non-cash payments
+-	if (isExactAmountModeActive.value && !isCashPaymentMethod(method)) {
+-		// Calculate the remaining amount after ALL existing payments (cash + non-cash)
+-		// Non-cash payments in exact amount mode must equal the remaining balance exactly
+-		const maxAllowed = roundCurrency(props.grandTotal - totalPaid.value);
+-
++	// Non-cash can be any partial amount, but total non-cash across all bank,
++	// electronic and terminal methods cannot exceed the invoice total.
++	if (!isCashPaymentMethod(method)) {
++		const maxAllowed = roundCurrency(props.grandTotal) - nonCashPaidAmount.value;
+ 		if (maxAllowed <= 0) {
+-			showWarning(__("Cannot add more non-cash payments. Use cash for overpayment."));
++			showWarning(__("Non-cash payments already equal the invoice total."));
+ 			return;
+ 		}
+-
+-		// Warn and reject if amount doesn't match exact remaining (use rounded comparison to avoid floating-point issues)
+-		if (roundCurrency(amt) !== maxAllowed) {
++		if (roundCurrency(amt) > maxAllowed + 0.001) {
+ 			showWarning(
+-				__("Non-cash payment must equal {0} exactly", [formatCurrency(maxAllowed)])
++				__("Maximum non-cash amount is {0}", [formatCurrency(maxAllowed)])
+ 			);
+ 			return;
+ 		}
+-
+-		// Use the maxAllowed value to ensure exact match
+-		amt = maxAllowed;
+ 	}
+ 
+-	// For mixed payments in exact amount mode, validate total doesn't exceed grand total
+-	if (isExactAmountModeActive.value && hasNonCashPayment.value && isCashPaymentMethod(method)) {
+-		const newTotal = totalPaid.value + amt;
+-		if (newTotal > roundCurrency(props.grandTotal)) {
+-			showWarning(
+-				__("Mixed payment cannot exceed invoice total. Limit: {0}", [
+-					formatCurrency(roundCurrency(props.grandTotal) - totalPaid.value),
+-				])
+-			);
+-			return;
+-		}
+-	}
++	// Cash may exceed the remaining balance in mixed payments; changeAmount handles
++	// the excess. No mixed-payment ceiling is applied to Cash.
+ 
+ 	// Block the action when adding this payment would cause a large overpayment.
+ 	// This catches accidental double-adds (e.g., quick amount tap then numpad add)
+@@ -3388,6 +3472,14 @@ function completePayment() {
+ 		return;
+ 	}
+ 
++	if (hasPaymentHubElectronicEntry.value) {
++		const digits = String(paymentHubMobileNumber.value || "").replace(/\D/g, "");
++		if (digits.length < 8) {
++			showWarning(__("Enter a valid mobile number for the WhatsApp payment link"));
++			return;
++		}
++	}
++
+ 	// "Pay on Receivable Account": the chosen account holds the unpaid balance (the invoice's
+ 	// debit_to). Tendered payments are real money; whatever is left (grand_total − tendered)
+ 	// stays outstanding on that account — it is NOT a payment row.
+@@ -3403,6 +3495,9 @@ function completePayment() {
+ 		change_amount: changeAmount.value,
+ 		is_partial_payment: isPartial,
+ 		paid_amount: totalPaid.value,
++		payment_hub_mobile_number: hasPaymentHubElectronicEntry.value
++			? normalizedPaymentHubMobile()
++			: null,
+ 		outstanding_amount: outstanding,
+ 		sales_team: selectedSalesPersons.value.length > 0 ? selectedSalesPersons.value : null,
+ 		delivery_date: isSalesOrder.value ? deliveryDate.value : null,
+diff --git a/POS/src/components/sale/ReturnInvoiceDialog.vue b/POS/src/components/sale/ReturnInvoiceDialog.vue
+index 49e3c22..73348c6 100644
+--- a/POS/src/components/sale/ReturnInvoiceDialog.vue
++++ b/POS/src/components/sale/ReturnInvoiceDialog.vue
+@@ -719,6 +719,14 @@
+ 
+ 				<!-- Payment Methods Selection -->
+ 				<div v-if="selectedItems.length > 0">
++					<div v-if="paymentHubPlanLoading" class="bg-blue-50 rounded-xl p-3 border border-blue-200 mb-4 text-start text-xs text-blue-800">
++						{{ __("Checking the original payment source before allowing this return...") }}
++					</div>
++					<div v-else-if="paymentHubPlanError" class="bg-red-50 rounded-xl p-3 border border-red-200 mb-4 text-start">
++						<div class="text-sm font-bold text-red-900">{{ __("Payment Source Check Failed") }}</div>
++						<div class="text-xs text-red-700 mt-1">{{ paymentHubPlanError }}</div>
++					</div>
++
+ 					<!-- Credit Sale Return Notice -->
+ 					<div
+ 						v-if="isOriginalCreditSale"
+@@ -738,7 +746,7 @@
+ 
+ 					<!-- Add to Customer Credit Option (only for non-credit sales) -->
+ 					<div
+-						v-if="!isOriginalCreditSale"
++						v-if="!isOriginalCreditSale && !paymentHubManaged"
+ 						class="bg-emerald-50 rounded-xl p-4 border border-emerald-200 mb-4"
+ 					>
+ 						<label class="flex items-start gap-3 cursor-pointer">
+@@ -822,6 +830,28 @@
+ 						</div>
+ 					</div>
+ 
++					<!-- Payment Hub refund source lock -->
++					<div v-if="paymentHubManaged && !isOriginalCreditSale" class="bg-sky-50 rounded-xl p-4 border border-sky-200 mb-4 text-start">
++						<div class="flex items-start gap-3">
++							<FeatherIcon name="shield" class="w-5 h-5 text-sky-600 flex-shrink-0 mt-0.5" />
++							<div class="flex-1">
++								<h4 class="text-sm font-bold text-sky-900">{{ __("Refund to Original Payment") }}</h4>
++								<p class="text-xs text-sky-800 mt-1">{{ __("Payment Hub locks the refund to the original cash, gateway, payment method and transaction. The cashier cannot change the refund source.") }}</p>
++							</div>
++						</div>
++					</div>
++					<div v-if="paymentHubLegacyProtected" class="rounded-xl border border-amber-300 bg-amber-50 p-3 mb-4 text-start">
++						<div class="flex items-start gap-2"><FeatherIcon name="alert-triangle" class="w-4 h-4 text-amber-700 mt-0.5" /><div><div class="text-xs font-bold text-amber-900">{{ __("Legacy Protected Payment") }}</div><div class="text-[11px] text-amber-800 mt-0.5">{{ __("This Electronic / Physical payment is not linked to a Payment Hub provider transaction. Direct provider refund is blocked. A manager with Refund Override permission must authorize a Cash refund.") }}</div></div></div>
++					</div>
++					<div v-if="paymentHubManaged && requiresManagerAuthorization" class="rounded-xl border border-violet-200 bg-violet-50 p-3 mb-4 text-start">
++						<div class="flex items-start gap-2"><FeatherIcon name="lock" class="w-4 h-4 text-violet-600 mt-0.5" /><div><div class="text-xs font-bold text-violet-900">{{ __("Manager / Admin Authorization Required") }}</div><div class="text-[11px] text-violet-700 mt-0.5">{{ __("Electronic and physical-terminal refunds cannot be sent until an authorized manager verifies their password.") }}</div></div></div>
++					</div>
++					<div v-if="hasRefundOverride" class="rounded-xl border border-orange-200 bg-orange-50 p-3 mb-4 text-start">
++						<label class="block text-xs font-bold text-orange-900 mb-1">{{ __("Refund Override Reason") }} *</label>
++						<input v-model="refundOverrideReason" type="text" class="w-full rounded-lg border border-orange-300 bg-white px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-orange-400" :placeholder="__('Why is the original payment method being overridden?')" />
++						<p class="mt-1 text-[10px] text-orange-700">{{ __("The original provider, actual cash refund, manager and reason are permanently recorded.") }}</p>
++					</div>
++
+ 					<!-- Regular Payment Methods (only for non-credit sales and not adding to customer credit) -->
+ 					<div v-if="!isOriginalCreditSale && !addToCustomerCredit">
+ 						<div
+@@ -831,6 +861,7 @@
+ 								{{ __("Refund Payment Methods") }}
+ 							</label>
+ 							<Button
++								v-if="!paymentHubManaged"
+ 								size="sm"
+ 								variant="subtle"
+ 								@click="addPaymentRow"
+@@ -859,7 +890,36 @@
+ 													: "💰"
+ 											}}
+ 										</div>
++										<div
++											v-if="paymentHubManaged"
++											class="flex-1 min-w-0 rounded-lg border border-sky-200 bg-sky-50 px-3 py-2"
++										>
++											<div class="text-sm font-semibold text-sky-900">{{ payment.mode_of_payment }}</div>
++											<div class="text-[11px] text-sky-700 truncate">
++												{{ payment.provider ? `${payment.provider}${payment.actual_payment_method ? ' • ' + payment.actual_payment_method : ''}` : payment.channel }}
++											</div>
++											<div class="text-[10px] text-sky-600 mt-0.5">
++												{{ __("Available:") }} {{ formatCurrency(payment.max_refundable || 0) }}
++											</div>
++											<div v-if="!payment.refund_supported && payment.warning && !payment.override_to_cash" class="text-[10px] text-red-600 mt-1">{{ payment.warning }}</div>
++											<div v-if="payment.override_allowed" class="mt-2 flex flex-wrap items-center gap-2">
++												<button
++													type="button"
++													@click="toggleRefundOverride(payment)"
++													:class="[
++														'rounded-md border px-2 py-1 text-[10px] font-semibold',
++														payment.override_to_cash ? 'border-orange-300 bg-orange-100 text-orange-800' : 'border-gray-300 bg-white text-gray-600 hover:bg-gray-50',
++													]"
++												>
++													{{ payment.override_to_cash ? __("Override: Refund as Cash") : __("Manager Override to Cash") }}
++												</button>
++												<span v-if="payment.override_to_cash" class="text-[10px] font-medium text-orange-700">
++													{{ __("Actual refund:") }} {{ payment.override_mode_of_payment }}
++												</span>
++											</div>
++										</div>
+ 										<select
++											v-else
+ 											v-model="payment.mode_of_payment"
+ 											:style="paymentSelectStyle"
+ 											class="payment-select flex-1 py-2.5 border border-gray-300 rounded-lg text-sm font-medium focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500 bg-white appearance-none cursor-pointer hover:border-gray-400 transition-colors ps-3 pe-10"
+@@ -877,12 +937,7 @@
+ 									<!-- Amount with Counter -->
+ 									<div class="flex items-center gap-2 flex-1">
+ 										<button
+-											@click="
+-												payment.amount = Math.max(
+-													0,
+-													(payment.amount || 0) - 1
+-												)
+-											"
++											@click="adjustRefundPayment(payment, -1)"
+ 											type="button"
+ 											class="flex-shrink-0 w-10 h-10 sm:w-9 sm:h-9 rounded-lg bg-gray-100 hover:bg-gray-200 active:bg-gray-300 text-gray-700 font-bold text-xl transition-colors flex items-center justify-center border border-gray-300"
+ 										>
+@@ -890,10 +945,7 @@
+ 										</button>
+ 										<input
+ 											:value="payment.amount"
+-											@input="
+-												payment.amount =
+-													parseFloat($event.target.value) || 0
+-											"
++											@input="updateRefundPaymentAmount(payment, $event.target.value)"
+ 											@focus="$event.target.select()"
+ 											type="text"
+ 											inputmode="decimal"
+@@ -901,7 +953,7 @@
+ 											class="flex-1 min-w-0 px-3 py-2.5 text-base font-bold text-center border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500 hover:border-gray-400 transition-colors"
+ 										/>
+ 										<button
+-											@click="payment.amount = (payment.amount || 0) + 1"
++											@click="adjustRefundPayment(payment, 1)"
+ 											type="button"
+ 											class="flex-shrink-0 w-10 h-10 sm:w-9 sm:h-9 rounded-lg bg-gray-100 hover:bg-gray-200 active:bg-gray-300 text-gray-700 font-bold text-xl transition-colors flex items-center justify-center border border-gray-300"
+ 										>
+@@ -910,7 +962,7 @@
+ 									</div>
+ 									<!-- Delete Button -->
+ 									<button
+-										v-if="refundPayments.length > 1"
++										v-if="refundPayments.length > 1 && !paymentHubManaged"
+ 										@click="removePaymentRow(index)"
+ 										class="hidden sm:flex flex-shrink-0 w-9 h-9 items-center justify-center text-red-500 hover:text-red-700 hover:bg-red-50 active:bg-red-100 rounded-lg transition-colors"
+ 										:title="__('Remove')"
+@@ -920,7 +972,7 @@
+ 								</div>
+ 								<!-- Mobile Delete Button -->
+ 								<button
+-									v-if="refundPayments.length > 1"
++									v-if="refundPayments.length > 1 && !paymentHubManaged"
+ 									@click="removePaymentRow(index)"
+ 									class="sm:hidden mt-2 w-full py-2 text-sm text-red-600 hover:bg-red-50 active:bg-red-100 rounded-lg transition-colors flex items-center justify-center gap-1"
+ 								>
+@@ -1073,6 +1125,14 @@
+ 						>
+ 							<span class="text-sm">{{ __("Cancel") }}</span>
+ 						</Button>
++						<Button
++							v-if="paymentHubManaged && returnDraftDoc && returnRefundStatus && !returnRefundStatus.all_complete"
++							variant="subtle"
++							@click="handleCheckRefund"
++							:disabled="isSubmitting"
++						>
++							<span class="text-sm whitespace-nowrap">{{ __("Check Refund") }}</span>
++						</Button>
+ 						<Button
+ 							variant="solid"
+ 							theme="red"
+@@ -1082,7 +1142,7 @@
+ 							class="flex-1 sm:flex-initial"
+ 						>
+ 							<span class="text-sm whitespace-nowrap">{{
+-								__("Create Return")
++								paymentHubManaged ? __("Refund & Create Return") : __("Create Return")
+ 							}}</span>
+ 						</Button>
+ 					</div>
+@@ -1091,6 +1151,39 @@
+ 		</template>
+ 	</Dialog>
+ 
++	<!-- Refund manager/admin authorization -->
++	<Dialog
++		v-model="refundAuthDialog.visible"
++		:options="{ title: __('Manager / Admin Authorization'), size: 'sm' }"
++	>
++		<template #body-content>
++			<div class="space-y-3">
++				<div class="rounded-lg border border-violet-200 bg-violet-50 p-3 text-xs text-violet-800">
++					{{ hasRefundOverride ? __("A refund-method override requires a user with Payment Hub Refund Override permission.") : __("Electronic / terminal refund requires a user with Payment Hub Refund Approver permission.") }}
++				</div>
++				<div>
++					<label class="block text-xs font-semibold text-gray-700 mb-1">{{ __("Manager Username / Email") }}</label>
++					<input v-model="refundAuthDialog.approver" type="text" autocomplete="username" class="w-full rounded-lg border border-gray-300 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-violet-500" />
++				</div>
++				<div>
++					<label class="block text-xs font-semibold text-gray-700 mb-1">{{ __("Password") }}</label>
++					<input v-model="refundAuthDialog.password" type="password" autocomplete="current-password" class="w-full rounded-lg border border-gray-300 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-violet-500" @keyup.enter="submitRefundAuthorization" />
++				</div>
++				<div>
++					<label class="block text-xs font-semibold text-gray-700 mb-1">{{ __("Authorization Reason") }}</label>
++					<textarea v-model="refundAuthDialog.reason" rows="2" class="w-full rounded-lg border border-gray-300 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-violet-500"></textarea>
++				</div>
++				<p v-if="refundAuthDialog.error" class="text-xs text-red-600">{{ refundAuthDialog.error }}</p>
++			</div>
++		</template>
++		<template #actions>
++			<div class="flex w-full justify-end gap-2">
++				<Button variant="subtle" :disabled="refundAuthDialog.loading" @click="cancelRefundAuthorization">{{ __("Cancel") }}</Button>
++				<Button variant="solid" theme="blue" :loading="refundAuthDialog.loading" :disabled="refundAuthDialog.loading" @click="submitRefundAuthorization">{{ __("Authorize Refund") }}</Button>
++			</div>
++		</template>
++	</Dialog>
++
+ 	<!-- Error Dialog -->
+ 	<Dialog v-model="errorDialog.visible" :options="{ title: errorDialog.title, size: 'sm' }">
+ 		<template #body-content>
+@@ -1189,6 +1282,7 @@ import {
+ 	roundCurrency,
+ } from "@/utils/currency";
+ import { getInvoiceStatusColor } from "@/utils/invoice";
++import { call } from "@/utils/apiWrapper";
+ import { Button, Dialog, FeatherIcon, createResource } from "frappe-ui";
+ import { computed, onMounted, onUnmounted, reactive, ref, watch } from "vue";
+ 
+@@ -1239,6 +1333,25 @@ const isSubmitting = ref(false);
+ // When true, return amount is added to customer credit balance instead of cash refund
+ const addToCustomerCredit = ref(false);
+ 
++// Payment Hub return/refund state
++const paymentHubPlan = ref(null);
++const paymentHubPlanLoading = ref(false);
++const paymentHubPlanError = ref("");
++const returnDraftDoc = ref(null);
++const returnRefundStatus = ref(null);
++const refundOverrideReason = ref("");
++let refundAuthResolve = null;
++const refundAuthDialog = reactive({
++	visible: false,
++	loading: false,
++	approver: "",
++	password: "",
++	reason: "",
++	error: "",
++	returnInvoice: null,
++	refundLines: [],
++});
++
+ // Autocomplete state
+ const invoiceSearchInput = ref(null);
+ const showSuggestions = ref(false);
+@@ -1419,6 +1532,9 @@ const fetchInvoiceResource = createResource({
+ 
+ 			// Set up refund payment rows based on original invoice payments
+ 			initializePaymentsFromInvoice();
++
++			// Lock Payment Hub-managed returns to the original captured payment sources.
++			loadPaymentHubRefundPlan();
+ 		}
+ 	},
+ 	onError(error) {
+@@ -1634,13 +1750,18 @@ const creditAdjustmentAmount = computed(() =>
+ 
+ // Summary display helpers for the Return Summary section
+ const showPartialBreakdown = computed(() => isPartiallyPaid.value && !isOriginalCreditSale.value);
+-const summaryRefundLabel = computed(() =>
+-	showPartialBreakdown.value ? "Cash Refund:" : "Refund Amount:"
+-);
++const summaryRefundLabel = computed(() => {
++	if (paymentHubManaged.value) return "Refund to Original Payment:";
++	return showPartialBreakdown.value ? "Cash Refund:" : "Refund Amount:";
++});
+ const summaryRefundAmount = computed(() =>
+ 	showPartialBreakdown.value ? maxRefundableAmount.value : returnTotal.value
+ );
+ 
++watch(summaryRefundAmount, () => {
++	if (paymentHubManaged.value) applyPaymentHubRefundAmounts();
++});
++
+ // Cache RTL direction check (only needs to run once per session)
+ const isRTL = document.documentElement.dir === "rtl";
+ const paymentSelectStyle = {
+@@ -1650,10 +1771,25 @@ const paymentSelectStyle = {
+ const canCreateReturn = computed(() => {
+ 	const hasSelectedItems = selectedItems.value.length > 0;
+ 	if (!hasSelectedItems || !hasOpenShift.value) return false;
++	if (paymentHubPlanLoading.value || paymentHubPlanError.value) return false;
+ 	// Credit sale returns and "add to customer credit" returns don't need payment validation
+ 	if (isOriginalCreditSale.value || addToCustomerCredit.value) return true;
+ 
+ 	const payments = refundPayments.value;
++	if (paymentHubManaged.value) {
++		const active = payments.filter((payment) => Number(payment.amount || 0) > 0);
++		if (!active.length) return false;
++		if (active.some((payment) => !payment.refund_supported && !payment.override_to_cash)) return false;
++		if (
++			active.some(
++				(payment) =>
++					Number(payment.amount || 0) > Number(payment.max_refundable || 0) + 0.0005
++			)
++		)
++			return false;
++		if (hasRefundOverride.value && !refundOverrideReason.value.trim()) return false;
++		return Math.abs(totalPaymentAmount.value - summaryRefundAmount.value) < 0.01;
++	}
+ 	if (isPartiallyPaid.value) {
+ 		if (!payments.length) return true;
+ 		const hasValidPayments = payments.every(
+@@ -1731,6 +1867,10 @@ watch(normalizedSearchTerm, (searchTerm) => {
+ // Auto-populate payment amount when return total changes (single payment only)
+ watch(returnTotal, (newTotal) => {
+ 	if (!returnModal.visible || !showDialog.value || isOriginalCreditSale.value) return;
++	if (paymentHubManaged.value) {
++		applyPaymentHubRefundAmounts();
++		return;
++	}
+ 	if (refundPayments.value.length !== 1 || newTotal <= 0) return;
+ 
+ 	refundPayments.value[0].amount = isPartiallyPaid.value
+@@ -1794,13 +1934,28 @@ function validateSelectedItems() {
+ }
+ 
+ function addPaymentRow() {
++	if (paymentHubManaged.value) return;
+ 	refundPayments.value.push({ mode_of_payment: "", amount: 0 });
+ }
+ 
+ function removePaymentRow(paymentIndex) {
++	if (paymentHubManaged.value) return;
+ 	refundPayments.value.splice(paymentIndex, 1);
+ }
+ 
++function updateRefundPaymentAmount(payment, value) {
++	let amount = Number.parseFloat(value) || 0;
++	amount = Math.max(0, amount);
++	if (paymentHubManaged.value) {
++		amount = Math.min(amount, Number(payment.max_refundable || 0));
++	}
++	payment.amount = roundCurrency(amount);
++}
++
++function adjustRefundPayment(payment, delta) {
++	updateRefundPaymentAmount(payment, (Number(payment.amount) || 0) + delta);
++}
++
+ /**
+  * Cross-branch return — frontend safety net (Layer 2).
+  *
+@@ -1823,6 +1978,10 @@ function removePaymentRow(paymentIndex) {
+  * value, so this remap also ensures the dropdown works correctly.
+  */
+ function initializePaymentsFromInvoice() {
++	if (paymentHubManaged.value) {
++		initializePaymentHubRefunds();
++		return;
++	}
+ 	if (isOriginalCreditSale.value) {
+ 		refundPayments.value = [];
+ 		return;
+@@ -1856,6 +2015,100 @@ function initializePaymentsFromInvoice() {
+ 	}
+ }
+ 
++const paymentHubLegacyProtected = computed(() => Boolean(paymentHubPlan.value?.legacy_protected));
++const paymentHubManaged = computed(() =>
++	Boolean(paymentHubPlan.value?.managed || paymentHubPlan.value?.legacy_protected)
++);
++const hasRefundOverride = computed(() =>
++	refundPayments.value.some(
++		(payment) => payment.override_to_cash && Number(payment.amount || 0) > 0
++	)
++);
++const requiresManagerAuthorization = computed(() =>
++	refundPayments.value.some(
++		(payment) =>
++			Number(payment.amount || 0) > 0 &&
++			(payment.authorization_required || payment.override_to_cash)
++	)
++);
++
++function toggleRefundOverride(payment) {
++	if (!payment.override_allowed) return;
++	payment.override_to_cash = !payment.override_to_cash;
++	if (payment.override_to_cash) {
++		const target = payment.override_targets?.[0];
++		payment.override_mode_of_payment = target?.mode_of_payment || "Cash";
++	}
++}
++
++function effectiveRefundMode(payment) {
++	return payment.override_to_cash ? payment.override_mode_of_payment : payment.mode_of_payment;
++}
++
++async function loadPaymentHubRefundPlan() {
++	paymentHubPlan.value = null;
++	paymentHubPlanLoading.value = true;
++	paymentHubPlanError.value = "";
++	returnDraftDoc.value = null;
++	returnRefundStatus.value = null;
++	if (!originalInvoice.value?.name) {
++		paymentHubPlanLoading.value = false;
++		return;
++	}
++
++	try {
++		const result = await call("erpnext_payment_hub.pos.refund.get_refund_plan", {
++			original_invoice: originalInvoice.value.name,
++		});
++		if (result?.managed || result?.legacy_protected) {
++			paymentHubPlan.value = result;
++			addToCustomerCredit.value = false;
++			initializePaymentHubRefunds();
++		}
++	} catch (error) {
++		console.error("Payment Hub refund plan check failed", error);
++		paymentHubPlanError.value = extractErrorMessage(
++			error,
++			__("Unable to verify the original payment source. Return is blocked for safety.")
++		);
++	} finally {
++		paymentHubPlanLoading.value = false;
++	}
++}
++
++function initializePaymentHubRefunds() {
++	if (!paymentHubPlan.value?.managed && !paymentHubPlan.value?.legacy_protected) return;
++	refundPayments.value = (paymentHubPlan.value.sources || []).map((source) => ({
++		mode_of_payment: source.mode_of_payment,
++		amount: 0,
++		source_allocation: source.source_allocation,
++		channel: source.channel,
++		provider_account: source.provider_account,
++		provider: source.provider,
++		actual_payment_method: source.actual_payment_method,
++		gateway_transaction: source.gateway_transaction,
++		max_refundable: Number(source.refundable_amount || 0),
++		refund_supported: source.refund_supported !== false,
++		authorization_required: source.authorization_required === true,
++		override_allowed: source.override_allowed === true,
++		override_targets: source.override_targets || [],
++		override_to_cash: false,
++		override_mode_of_payment: source.override_targets?.[0]?.mode_of_payment || "Cash",
++		warning: source.warning || null,
++	}));
++	applyPaymentHubRefundAmounts();
++}
++
++function applyPaymentHubRefundAmounts() {
++	if (!paymentHubManaged.value) return;
++	let remaining = Number(summaryRefundAmount.value || 0);
++	for (const payment of refundPayments.value) {
++		const maxAmount = Number(payment.max_refundable || 0);
++		payment.amount = roundCurrency(Math.min(maxAmount, Math.max(remaining, 0)));
++		remaining = roundCurrency(Math.max(0, remaining - payment.amount));
++	}
++}
++
+ // Resource for checking invoice return validity (defined early for use in helpers)
+ const checkInvoiceValidityResource = createResource({
+ 	url: "pos_next.api.invoices.check_invoice_return_validity",
+@@ -1995,6 +2248,267 @@ function decrementReturnQuantity(item) {
+ 	}
+ }
+ 
++function buildPaymentHubReturnInvoiceData() {
++	const baseDoc = preparedReturnDoc.value || {};
++	const invoiceData = {
++		doctype: "Sales Invoice",
++		pos_profile: props.posProfile,
++		posa_pos_opening_shift: props.posOpeningShift,
++		customer: baseDoc.customer || originalInvoice.value.customer,
++		company: baseDoc.company || originalInvoice.value.company,
++		is_return: 1,
++		return_against: baseDoc.return_against || originalInvoice.value.name,
++		update_outstanding_for_self: 0,
++		is_pos: 1,
++		update_stock: 1,
++		sales_team:
++			baseDoc.sales_team?.map((member) => ({
++				sales_person: member.sales_person,
++				allocated_percentage: member.allocated_percentage || 0,
++			})) || [],
++		items: selectedItems.value.map((item) => ({
++			item_code: item.item_code,
++			item_name: item.item_name,
++			qty: -Math.abs(item.return_qty),
++			rate: item.rate,
++			warehouse: item.warehouse,
++			uom: item.uom,
++			conversion_factor: item.conversion_factor || 1,
++			sales_invoice_item: item.name,
++		})),
++		add_to_customer_balance: false,
++		payments: refundPayments.value
++			.filter((payment) => Number(payment.amount || 0) > 0)
++			.map((payment) => ({
++				mode_of_payment: effectiveRefundMode(payment),
++				amount: -Math.abs(payment.amount),
++			})),
++		remarks: returnReason.value || __("Return against {0}", [originalInvoice.value.name]),
++	};
++	if (returnDraftDoc.value?.name) invoiceData.name = returnDraftDoc.value.name;
++	return invoiceData;
++}
++
++function finishReturnSuccess(data) {
++	submitError.value = "";
++	emit("return-created", data);
++	loadInvoicesResource.reload();
++	closeReturnModal();
++	showSuccess(__("Return invoice {0} created successfully", [data.name]));
++}
++
++async function submitPaymentHubReturnDraft() {
++	if (!returnDraftDoc.value?.name) throw new Error(__("Return draft is missing"));
++	const result = await call("pos_next.api.invoices.submit_invoice", {
++		invoice: JSON.stringify(returnDraftDoc.value),
++		data: JSON.stringify({}),
++	});
++	finishReturnSuccess(result);
++	return result;
++}
++
++function cancelRefundAuthorization() {
++	refundAuthDialog.visible = false;
++	refundAuthDialog.loading = false;
++	refundAuthDialog.password = "";
++	refundAuthDialog.error = "";
++	const resolve = refundAuthResolve;
++	refundAuthResolve = null;
++	resolve?.(null);
++}
++
++async function submitRefundAuthorization() {
++	if (refundAuthDialog.loading) return;
++	if (!refundAuthDialog.approver || !refundAuthDialog.password || !refundAuthDialog.reason.trim()) {
++		refundAuthDialog.error = __("Manager username, password and reason are required");
++		return;
++	}
++	refundAuthDialog.loading = true;
++	refundAuthDialog.error = "";
++	try {
++		const overridePayment = refundAuthDialog.refundLines.find((line) => line.override_channel);
++		const result = await call("erpnext_payment_hub.pos.authorization.authorize_pos_refund", {
++			approver: refundAuthDialog.approver,
++			password: refundAuthDialog.password,
++			original_invoice: originalInvoice.value.name,
++			return_invoice: refundAuthDialog.returnInvoice,
++			amount: roundCurrency(
++				refundAuthDialog.refundLines.reduce(
++					(sum, line) => sum + Number(line.amount || 0),
++					0
++				)
++			),
++			reason: refundAuthDialog.reason.trim(),
++			source_allocations: JSON.stringify(
++				refundAuthDialog.refundLines.map((line) => line.source_allocation)
++			),
++			is_override: hasRefundOverride.value ? 1 : 0,
++			override_channel: overridePayment?.override_channel || null,
++			override_mode_of_payment: overridePayment?.override_mode_of_payment || null,
++		});
++		refundAuthDialog.visible = false;
++		refundAuthDialog.password = "";
++		const resolve = refundAuthResolve;
++		refundAuthResolve = null;
++		resolve?.(result?.authorization_token || null);
++	} catch (error) {
++		refundAuthDialog.password = "";
++		refundAuthDialog.error = extractErrorMessage(error, __("Authorization failed"));
++	} finally {
++		refundAuthDialog.loading = false;
++	}
++}
++
++function requestRefundAuthorization(returnInvoice, refundLines) {
++	if (!requiresManagerAuthorization.value) return Promise.resolve(null);
++	refundAuthDialog.returnInvoice = returnInvoice;
++	refundAuthDialog.refundLines = refundLines;
++	refundAuthDialog.password = "";
++	refundAuthDialog.error = "";
++	refundAuthDialog.reason =
++		refundOverrideReason.value.trim() ||
++		returnReason.value.trim() ||
++		__("POS customer return");
++	refundAuthDialog.visible = true;
++	return new Promise((resolve) => {
++		refundAuthResolve = resolve;
++	});
++}
++
++watch(
++	() => refundAuthDialog.visible,
++	(visible) => {
++		if (!visible && refundAuthResolve && !refundAuthDialog.loading) {
++			const resolve = refundAuthResolve;
++			refundAuthResolve = null;
++			refundAuthDialog.password = "";
++			resolve(null);
++		}
++	}
++);
++
++async function handleLegacyProtectedReturn() {
++	if (!hasRefundOverride.value) {
++		throw new Error(
++			__("This legacy Electronic / Physical payment requires a manager-authorized Cash override.")
++		);
++	}
++
++	const invoiceData = buildPaymentHubReturnInvoiceData();
++	const draft = await call("pos_next.api.invoices.update_invoice", {
++		data: JSON.stringify(invoiceData),
++	});
++	returnDraftDoc.value = draft;
++
++	const refundLines = refundPayments.value
++		.filter((payment) => Number(payment.amount || 0) > 0)
++		.map((payment) => ({
++			source_allocation: payment.source_allocation,
++			amount: roundCurrency(payment.amount),
++			override_channel: "Cash",
++			override_mode_of_payment: payment.override_mode_of_payment || "Cash",
++			override_reason: refundOverrideReason.value.trim(),
++		}));
++
++	const authorizationToken = await requestRefundAuthorization(draft.name, refundLines);
++	if (!authorizationToken) {
++		showWarning(__("Return was not submitted. Manager Refund Override authorization is required."));
++		return { authorization_required: true, return_invoice: draft.name };
++	}
++
++	return await submitPaymentHubReturnDraft();
++}
++
++async function handlePaymentHubReturn() {
++	if (paymentHubLegacyProtected.value) {
++		return await handleLegacyProtectedReturn();
++	}
++
++	const invoiceData = buildPaymentHubReturnInvoiceData();
++	const draft = await call("pos_next.api.invoices.update_invoice", {
++		data: JSON.stringify(invoiceData),
++	});
++	returnDraftDoc.value = draft;
++
++	const refundLines = refundPayments.value
++		.filter((payment) => Number(payment.amount || 0) > 0)
++		.map((payment) => ({
++			source_allocation: payment.source_allocation,
++			amount: roundCurrency(payment.amount),
++			override_channel: payment.override_to_cash ? "Cash" : null,
++			override_mode_of_payment: payment.override_to_cash
++				? payment.override_mode_of_payment
++				: null,
++			override_reason: payment.override_to_cash ? refundOverrideReason.value.trim() : null,
++		}));
++
++	let authorizationToken = null;
++	if (requiresManagerAuthorization.value) {
++		authorizationToken = await requestRefundAuthorization(draft.name, refundLines);
++		if (!authorizationToken) {
++			showWarning(__("Refund was not sent. Manager authorization is required."));
++			return { authorization_required: true, return_invoice: draft.name };
++		}
++	}
++
++	const status = await call("erpnext_payment_hub.pos.refund.process_pos_return_refund", {
++		original_invoice: originalInvoice.value.name,
++		return_invoice: draft.name,
++		refund_lines: JSON.stringify(refundLines),
++		reason: returnReason.value || "POS customer return",
++		authorization_token: authorizationToken,
++	});
++	returnRefundStatus.value = status;
++
++	if (status?.all_complete) {
++		return await submitPaymentHubReturnDraft();
++	}
++
++	if (status?.needs_review) {
++		throw new Error(
++			__(
++				"Refund could not be confirmed. Return invoice {0} remains Draft. Review the Payment Hub refund before retrying.",
++				[draft.name]
++			)
++		);
++	}
++
++	showWarning(
++		__(
++			"Refund is pending with the payment provider. Return invoice {0} remains Draft. Use Check Refund to continue after confirmation.",
++			[draft.name]
++		)
++	);
++	return status;
++}
++
++async function handleCheckRefund() {
++	if (!returnDraftDoc.value?.name || isSubmitting.value) return;
++	isSubmitting.value = true;
++	try {
++		const status = await call("erpnext_payment_hub.pos.refund.refresh_return_refunds", {
++			return_invoice: returnDraftDoc.value.name,
++		});
++		returnRefundStatus.value = status;
++		if (status?.all_complete) {
++			await submitPaymentHubReturnDraft();
++		} else if (status?.needs_review) {
++			openErrorDialog(
++				__("Refund requires manual review before the return can be submitted."),
++				__("Refund Review Required")
++			);
++		} else {
++			showWarning(__("Refund is still pending with the payment provider."));
++		}
++	} catch (error) {
++		const errorMsg = extractErrorMessage(error);
++		submitError.value = errorMsg;
++		openErrorDialog(errorMsg);
++	} finally {
++		isSubmitting.value = false;
++	}
++}
++
+ async function handleCreateReturn() {
+ 	if (!canCreateReturn.value || isSubmitting.value) return;
+ 	if (!hasOpenShift.value) {
+@@ -2012,6 +2526,11 @@ async function handleCreateReturn() {
+ 	isSubmitting.value = true;
+ 
+ 	try {
++		if (paymentHubManaged.value) {
++			await handlePaymentHubReturn();
++			return;
++		}
++
+ 		const result = await createReturnResource.submit();
+ 
+ 		// Check if result contains an error (HTTP 417 might return error in response body)
+@@ -2037,6 +2556,22 @@ function resetForm() {
+ 	returnItems.value = [];
+ 	returnReason.value = "";
+ 	refundPayments.value = [];
++	addToCustomerCredit.value = false;
++	paymentHubPlan.value = null;
++	paymentHubPlanLoading.value = false;
++	paymentHubPlanError.value = "";
++	returnDraftDoc.value = null;
++	returnRefundStatus.value = null;
++	refundOverrideReason.value = "";
++	refundAuthDialog.visible = false;
++	refundAuthDialog.loading = false;
++	refundAuthDialog.approver = "";
++	refundAuthDialog.password = "";
++	refundAuthDialog.reason = "";
++	refundAuthDialog.error = "";
++	refundAuthDialog.returnInvoice = null;
++	refundAuthDialog.refundLines = [];
++	refundAuthResolve = null;
+ 
+ 	// Reset list and search state
+ 	invoiceList.value = [];
+diff --git a/POS/src/pages/POSSale.vue b/POS/src/pages/POSSale.vue
+index 9b29537..3f30620 100644
+--- a/POS/src/pages/POSSale.vue
++++ b/POS/src/pages/POSSale.vue
+@@ -19,6 +19,10 @@
+ 				:is-offline="offlineStore.isOffline"
+ 				:is-syncing="offlineStore.isSyncing"
+ 				:pending-invoices-count="offlineStore.pendingInvoicesCount"
++				:payment-hub-enabled="Boolean(paymentHubConfig)"
++				:payment-hub-pending-count="paymentHubQueueCounts.waiting"
++				:payment-hub-paid-count="paymentHubQueueCounts.paid"
++				:payment-hub-failed-count="paymentHubQueueCounts.failed"
+ 				:is-any-dialog-open="uiStore.isAnyDialogOpen"
+ 				:cache-syncing="itemStore.cacheSyncing"
+ 				:cache-stats="itemStore.cacheStats"
+@@ -30,6 +34,7 @@
+ 				@printer-click="openHistoryDialog"
+ 				@refresh-click="handleRefresh"
+ 				@clear-cache="handleClearCache"
++				@payment-hub-click="showPaymentHubPendingDialog = true"
+ 				@logout="uiStore.showLogoutDialog = true"
+ 			>
+ 				<template #menu-items>
+@@ -522,6 +527,7 @@
+ 				:discount-amount="cartStore.totalDiscount"
+ 				:target-doctype="cartStore.targetDoctype"
+ 				:is-submitting="cartStore.isSubmitting"
++				:payment-hub-config="paymentHubConfig"
+ 				:applied-offer-count="cartStore.appliedOffers.length"
+ 				@payment-completed="handlePaymentCompleted"
+ 				@update-additional-discount="handleAdditionalDiscountUpdate"
+@@ -529,6 +535,15 @@
+ 				@show-coupon="uiStore.showCouponDialog = true"
+ 			/>
+ 
++			<PaymentHubPendingDialog
++				v-model="showPaymentHubPendingDialog"
++				:pos-profile="shiftStore.profileName"
++				:pos-opening-shift="shiftStore.currentShift?.name"
++				:payment-hub-config="paymentHubConfig"
++				@counts-updated="handlePaymentHubCountsUpdated"
++				@completed="handlePaymentHubCompleted"
++			/>
++
+ 			<!-- Customer Selection Dialog -->
+ 			<CustomerDialog
+ 				v-model="uiStore.showCustomerDialog"
+@@ -1058,6 +1073,7 @@ import ItemsSelector from "@/components/sale/ItemsSelector.vue";
+ import OffersDialog from "@/components/sale/OffersDialog.vue";
+ import OfflineInvoicesDialog from "@/components/sale/OfflineInvoicesDialog.vue";
+ import PaymentDialog from "@/components/sale/PaymentDialog.vue";
++import PaymentHubPendingDialog from "@/components/sale/PaymentHubPendingDialog.vue";
+ import ProductManagement from "@/components/sale/ProductManagement.vue";
+ import PromotionManagement from "@/components/sale/PromotionManagement.vue";
+ import ReturnInvoiceDialog from "@/components/sale/ReturnInvoiceDialog.vue";
+@@ -1160,6 +1176,14 @@ const editCustomer = ref(null); // Customer being edited (null for create mode)
+ const showClearCacheDialog = ref(false);
+ const clearCacheOverlayRef = ref(null);
+ 
++// Payment Hub POSNext adapter state
++const paymentHubConfig = ref(null);
++const paymentHubQueueCounts = ref({ waiting: 0, paid: 0, failed: 0 });
++const showPaymentHubPendingDialog = ref(false);
++const paymentHubCartReference = ref(null);
++const paymentHubCartFingerprint = ref(null);
++let paymentHubPollTimer = null;
++
+ // Debounce timer for offer reapplication
+ const offerReapplyTimer = ref(null);
+ 
+@@ -2073,6 +2097,461 @@ async function handleErrorRetry() {
+ 	}
+ }
+ 
++function unwrapPaymentHubResult(result) {
++	return result?.message ?? result;
++}
++
++function normalizePaymentHubMode(value) {
++	return String(value || "").trim().toLowerCase();
++}
++
++function getPaymentHubModes() {
++	return {
++		cash: paymentHubConfig.value?.cash_mode_of_payment || "Cash",
++		electronic:
++			paymentHubConfig.value?.electronic_mode_of_payment || "Electronic Payment",
++		physical:
++			paymentHubConfig.value?.physical_mode_of_payment || "Physical Payment Terminal",
++	};
++}
++
++function getPaymentHubMapping(value) {
++	const normalized = normalizePaymentHubMode(value);
++	return (paymentHubConfig.value?.payment_method_mappings || []).find(
++		(row) => normalizePaymentHubMode(row?.mode_of_payment) === normalized
++	);
++}
++
++function isPaymentHubElectronicMode(value) {
++	const mapping = getPaymentHubMapping(value);
++	if (mapping) return mapping.channel === "Electronic Payment";
++	const modes = getPaymentHubModes();
++	const normalized = normalizePaymentHubMode(value);
++	return normalized === normalizePaymentHubMode(modes.electronic) || normalized === "electronic payment";
++}
++
++function isPaymentHubPhysicalMode(value) {
++	const mapping = getPaymentHubMapping(value);
++	if (mapping) return mapping.channel === "Physical Payment Terminal";
++	const modes = getPaymentHubModes();
++	const normalized = normalizePaymentHubMode(value);
++	return normalized === normalizePaymentHubMode(modes.physical) || normalized === "physical payment terminal";
++}
++
++function isPaymentHubCashMode(value) {
++	const mapping = getPaymentHubMapping(value);
++	if (mapping) return mapping.channel === "Cash";
++	const modes = getPaymentHubModes();
++	const normalized = normalizePaymentHubMode(value);
++	return normalized === normalizePaymentHubMode(modes.cash) || normalized === "cash";
++}
++
++function isPaymentHubManualMode(value) {
++	const mapping = getPaymentHubMapping(value);
++	return mapping?.channel === "Manual / Non-Cash";
++}
++
++function buildPaymentHubFingerprint() {
++	const items = cartStore.invoiceItems.map((item) => [
++		item.item_code,
++		Number(item.quantity || item.qty || 0),
++		Number(item.rate || 0),
++		item.uom || "",
++	]);
++	return JSON.stringify({
++		customer: cartStore.customer?.name || cartStore.customer || shiftStore.profileCustomer,
++		grand_total: Number(cartStore.grandTotal || 0),
++		items,
++	});
++}
++
++function getPaymentHubCartReference() {
++	const fingerprint = buildPaymentHubFingerprint();
++	if (!paymentHubCartReference.value || paymentHubCartFingerprint.value !== fingerprint) {
++		const token =
++			globalThis.crypto?.randomUUID?.() ||
++			`${Date.now()}-${Math.random().toString(16).slice(2)}`;
++		paymentHubCartReference.value = `POSNEXT-${token}`;
++		paymentHubCartFingerprint.value = fingerprint;
++	}
++	return paymentHubCartReference.value;
++}
++
++function resetPaymentHubCartReference() {
++	paymentHubCartReference.value = null;
++	paymentHubCartFingerprint.value = null;
++}
++
++async function loadPaymentHubConfig() {
++	if (offlineStore.isOffline || !shiftStore.profileName) return;
++	try {
++		const result = await call(
++			"erpnext_payment_hub.pos.api.get_pos_payment_config",
++			{ pos_profile: shiftStore.profileName },
++		);
++		paymentHubConfig.value = unwrapPaymentHubResult(result);
++	} catch (error) {
++		paymentHubConfig.value = null;
++		log.debug("Payment Hub config unavailable:", error?.message || error);
++	}
++}
++
++async function refreshPaymentHubQueueCounts() {
++	if (!paymentHubConfig.value || offlineStore.isOffline || !shiftStore.profileName) return;
++	try {
++		const result = await call(
++			"erpnext_payment_hub.pos.api.get_sales_queue_counts",
++			{
++				pos_profile: shiftStore.profileName,
++				current_pos_profile: shiftStore.profileName,
++				pos_opening_shift: shiftStore.currentShift?.name || null,
++			},
++		);
++		paymentHubQueueCounts.value = unwrapPaymentHubResult(result) || { waiting: 0, paid: 0, failed: 0 };
++	} catch (error) {
++		log.debug("Payment Hub queue count refresh failed:", error?.message || error);
++	}
++}
++
++function handlePaymentHubCountsUpdated(counts) {
++	paymentHubQueueCounts.value = counts || { waiting: 0, paid: 0, failed: 0 };
++}
++
++function buildPaymentHubInvoicePayload(customerValue, paymentData) {
++	return {
++		doctype: "Sales Invoice",
++		pos_profile: cartStore.posProfile,
++		posa_pos_opening_shift: cartStore.posOpeningShift,
++		customer: customerValue || shiftStore.profileCustomer,
++		company: shiftStore.profileCompany,
++		currency: shiftStore.profileCurrency,
++		items: cartStore.formatItemsForSubmission(cartStore.invoiceItems),
++		payments: [],
++		sales_team: JSON.parse(JSON.stringify(paymentData.sales_team || cartStore.salesTeam || [])),
++		discount_amount: cartStore.additionalDiscount || 0,
++		coupon_code: cartStore.appliedCoupon?.name || "",
++		is_pos: 1,
++		update_stock: 1,
++	};
++}
++
++async function startPaymentHubMappedSale(paymentData, customerValue, draftIdToDelete) {
++	if (offlineStore.isOffline) {
++		throw new Error(__("Payment Hub mapped payments require an online connection"));
++	}
++	if (cartStore.targetDoctype !== "Sales Invoice") {
++		throw new Error(__("Payment Hub mapped payments currently support Sales Invoice only"));
++	}
++	if (Number(paymentData.write_off_amount || 0) > 0) {
++		throw new Error(__("Write-off cannot be combined with Payment Hub mapped payments"));
++	}
++	if ((paymentData.payments || []).some((row) => row.is_customer_credit)) {
++		throw new Error(
++			__("Customer Credit balance cannot be mixed with gateway/terminal payments. Use a normal Mode of Payment for a payment provider."),
++		);
++	}
++
++	if (!paymentHubConfig.value) await loadPaymentHubConfig();
++	if (!paymentHubConfig.value) throw new Error(__("Payment Hub configuration is not available"));
++
++	const activePayments = (paymentData.payments || []).filter(
++		(row) => Number(row.amount || 0) > 0,
++	);
++	const managedRows = activePayments.filter(
++		(row) =>
++			isPaymentHubCashMode(row.mode_of_payment) ||
++			isPaymentHubManualMode(row.mode_of_payment) ||
++			isPaymentHubElectronicMode(row.mode_of_payment) ||
++			isPaymentHubPhysicalMode(row.mode_of_payment),
++	);
++	if (!managedRows.some((row) =>
++		isPaymentHubElectronicMode(row.mode_of_payment) || isPaymentHubPhysicalMode(row.mode_of_payment),
++	)) return null;
++
++	// Once a gateway/terminal method is involved, every tender row must have a
++	// Payment Hub classification so the final invoice and recovery queue remain
++	// one source of truth.
++	const unsupported = activePayments.filter(
++		(row) => !managedRows.includes(row),
++	);
++	if (unsupported.length) {
++		throw new Error(
++			__("Map these non-cash methods in Payment Hub Settings before mixing them with a gateway payment: {0}", [
++				unsupported.map((row) => row.mode_of_payment).join(", "),
++			]),
++		);
++	}
++
++	const cartReference = getPaymentHubCartReference();
++	const invoicePayload = buildPaymentHubInvoicePayload(customerValue, paymentData);
++	const callResult = await call("erpnext_payment_hub.pos.api.begin_mapped_sale", {
++		pos_system: "POSNext",
++		company: shiftStore.profileCompany,
++		grand_total: cartStore.grandTotal,
++		payments: activePayments.map((row) => ({
++			mode_of_payment: row.mode_of_payment,
++			amount: Number(row.amount || 0),
++		})),
++		draft_payload: invoicePayload,
++		currency: shiftStore.profileCurrency,
++		mobile_number: paymentData.payment_hub_mobile_number,
++		customer: customerValue || shiftStore.profileCustomer,
++		customer_name: cartStore.customer?.customer_name || cartStore.customer?.name || customerValue,
++		pos_profile: shiftStore.profileName,
++		pos_opening_shift: shiftStore.currentShift?.name || null,
++		warehouse: shiftStore.profileWarehouse,
++		computer_name: paymentHubConfig.value?.computer_name || null,
++		pos_station: paymentHubConfig.value?.station || null,
++		cart_reference: cartReference,
++		idempotency_key: cartReference,
++		send_whatsapp: 1,
++		auto_complete: 1,
++	});
++	const result = unwrapPaymentHubResult(callResult);
++
++	uiStore.showPaymentDialog = false;
++	cartStore.clearCart();
++	previousCartHash = "";
++	resetPaymentHubCartReference();
++	if (draftIdToDelete) draftsStore.deleteDraft(draftIdToDelete);
++	await refreshPaymentHubQueueCounts();
++
++	if (result?.invoice?.name) {
++		showSuccess(
++			result.change_amount > 0
++				? __("Payment completed. Change due: {0}", [result.change_amount])
++				: __("Payment completed"),
++		);
++		await handlePrintInvoice({ name: result.invoice.name });
++	} else {
++		const sessionName = result?.session?.name || __("Payment Hub sale");
++		if ((result?.errors || []).length) {
++			showWarning(
++				__("{0} saved in Payment Hub. Some payment attempts need attention in Waiting/Failed.", [sessionName]),
++			);
++		} else if (activePayments.some((row) => isPaymentHubElectronicMode(row.mode_of_payment))) {
++			showSuccess(__("Payment link sent. {0} moved to Waiting", [sessionName]));
++		} else {
++			showSuccess(__("Terminal payment started. Check Payment Hub for confirmation."));
++		}
++	}
++	return result;
++}
++
++
++async function startPaymentHubElectronicSale(paymentData, customerValue, draftIdToDelete) {
++	if (offlineStore.isOffline) {
++		throw new Error(__("Electronic Payment requires an online connection"));
++	}
++	if (cartStore.targetDoctype !== "Sales Invoice") {
++		throw new Error(__("Payment Hub Electronic Payment currently supports Sales Invoice only"));
++	}
++	if (Number(paymentData.write_off_amount || 0) > 0) {
++		throw new Error(__("Write-off cannot be combined with asynchronous Electronic Payment"));
++	}
++
++	if (!paymentHubConfig.value) await loadPaymentHubConfig();
++	if (!paymentHubConfig.value) {
++		throw new Error(__("Payment Hub configuration is not available"));
++	}
++
++	const activePayments = (paymentData.payments || []).filter(
++		(row) => Number(row.amount || 0) > 0,
++	);
++	const physicalPayment = activePayments.find((row) =>
++		isPaymentHubPhysicalMode(row.mode_of_payment),
++	);
++	if (physicalPayment) {
++		throw new Error(__("Electronic and physical-terminal payments cannot be mixed in one checkout"));
++	}
++
++	const electronicRows = activePayments.filter((row) =>
++		isPaymentHubElectronicMode(row.mode_of_payment),
++	);
++	if (electronicRows.length === 0) return null;
++
++	const electronicModes = [...new Set(electronicRows.map((row) => row.mode_of_payment))];
++	if (electronicModes.length !== 1) {
++		throw new Error(__("Use only one Electronic Payment provider per checkout"));
++	}
++	const electronicMode = electronicModes[0];
++	const electronicMapping = getPaymentHubMapping(electronicMode);
++
++	const unsupported = activePayments.filter(
++		(row) =>
++			!isPaymentHubCashMode(row.mode_of_payment) &&
++			!isPaymentHubElectronicMode(row.mode_of_payment),
++	);
++	if (unsupported.length > 0) {
++		throw new Error(
++			__("Electronic Payment currently supports split payment with Cash only"),
++		);
++	}
++
++	const electronicAmount = electronicRows.reduce(
++		(sum, row) => sum + Number(row.amount || 0),
++		0,
++	);
++	const cashRows = activePayments.filter((row) => isPaymentHubCashMode(row.mode_of_payment));
++	const cashModes = [...new Set(cashRows.map((row) => row.mode_of_payment))];
++	if (cashModes.length > 1) {
++		throw new Error(__("Use only one Cash Mode of Payment per checkout"));
++	}
++	const cashAmount = cashRows.reduce((sum, row) => sum + Number(row.amount || 0), 0);
++	const cashMode = cashModes[0] || paymentHubConfig.value?.cash_mode_of_payment || "Cash";
++
++	const cartReference = getPaymentHubCartReference();
++	const invoicePayload = buildPaymentHubInvoicePayload(customerValue, paymentData);
++	const callResult = await call(
++		"erpnext_payment_hub.pos.api.begin_async_electronic_sale",
++		{
++			pos_system: "POSNext",
++			company: shiftStore.profileCompany,
++			grand_total: cartStore.grandTotal,
++			electronic_amount: electronicAmount,
++			cash_amount: cashAmount,
++			mobile_number: paymentData.payment_hub_mobile_number,
++			draft_payload: invoicePayload,
++			currency: shiftStore.profileCurrency,
++			customer: customerValue || shiftStore.profileCustomer,
++			customer_name:
++				cartStore.customer?.customer_name || cartStore.customer?.name || customerValue,
++			pos_profile: shiftStore.profileName,
++			pos_opening_shift: shiftStore.currentShift?.name || null,
++			warehouse: shiftStore.profileWarehouse,
++			cart_reference: cartReference,
++			provider_account: electronicMapping?.provider_account || null,
++			payment_method: electronicMapping?.payment_method || "KNET",
++			electronic_mode_of_payment: electronicMode,
++			cash_mode_of_payment: cashMode,
++			idempotency_key: cartReference,
++			send_whatsapp: 1,
++		},
++	);
++	const result = unwrapPaymentHubResult(callResult);
++
++	uiStore.showPaymentDialog = false;
++	cartStore.clearCart();
++	previousCartHash = "";
++	resetPaymentHubCartReference();
++
++	if (draftIdToDelete) {
++		draftsStore.deleteDraft(draftIdToDelete);
++	}
++
++	await refreshPaymentHubQueueCounts();
++	const sessionName = result?.session?.name || __("Payment Hub sale");
++	const status = result?.session?.status;
++	if (status === "Ready to Complete") {
++		showSuccess(__("{0} is paid and ready to complete", [sessionName]));
++	} else {
++		showSuccess(__("Payment link sent. {0} moved to Waiting", [sessionName]));
++	}
++	return result;
++}
++
++async function startPaymentHubTerminalSale(paymentData, customerValue, draftIdToDelete) {
++	if (offlineStore.isOffline) {
++		throw new Error(__("Physical Terminal requires an online connection"));
++	}
++	if (cartStore.targetDoctype !== "Sales Invoice") {
++		throw new Error(__("Payment Hub Physical Terminal currently supports Sales Invoice only"));
++	}
++	if (Number(paymentData.write_off_amount || 0) > 0) {
++		throw new Error(__("Write-off cannot be combined with Physical Terminal payment"));
++	}
++
++	if (!paymentHubConfig.value) await loadPaymentHubConfig();
++	if (!paymentHubConfig.value) throw new Error(__("Payment Hub configuration is not available"));
++
++	const activePayments = (paymentData.payments || []).filter((row) => Number(row.amount || 0) > 0);
++	const terminalRows = activePayments.filter((row) => isPaymentHubPhysicalMode(row.mode_of_payment));
++	const electronicRows = activePayments.filter((row) => isPaymentHubElectronicMode(row.mode_of_payment));
++	if (electronicRows.length) {
++		throw new Error(__("Electronic and physical-terminal payments cannot be mixed in one checkout"));
++	}
++	const terminalModes = [...new Set(terminalRows.map((row) => row.mode_of_payment))];
++	if (terminalModes.length !== 1) {
++		throw new Error(__("Use only one Physical Terminal provider per checkout"));
++	}
++	const terminalMode = terminalModes[0];
++	const terminalMapping = getPaymentHubMapping(terminalMode);
++	const terminalReady = terminalMapping
++		? terminalMapping.terminal_api_ready !== false
++		: paymentHubConfig.value?.physical_terminal_api_ready !== false;
++	if (!terminalReady) {
++		throw new Error(__("Physical terminal API is not ready for {0}", [terminalMode]));
++	}
++	const unsupported = activePayments.filter(
++		(row) => !isPaymentHubCashMode(row.mode_of_payment) && !isPaymentHubPhysicalMode(row.mode_of_payment),
++	);
++	if (unsupported.length) {
++		throw new Error(__("Physical Terminal currently supports split payment with Cash only"));
++	}
++
++	const terminalAmount = terminalRows.reduce((sum, row) => sum + Number(row.amount || 0), 0);
++	const cashRows = activePayments.filter((row) => isPaymentHubCashMode(row.mode_of_payment));
++	const cashModes = [...new Set(cashRows.map((row) => row.mode_of_payment))];
++	if (cashModes.length > 1) throw new Error(__("Use only one Cash Mode of Payment per checkout"));
++	const cashAmount = cashRows.reduce((sum, row) => sum + Number(row.amount || 0), 0);
++	const cashMode = cashModes[0] || paymentHubConfig.value?.cash_mode_of_payment || "Cash";
++
++	const cartReference = getPaymentHubCartReference();
++	const invoicePayload = buildPaymentHubInvoicePayload(customerValue, paymentData);
++	const callResult = await call(
++		"erpnext_payment_hub.pos.api.begin_terminal_sale",
++		{
++			pos_system: "POSNext",
++			company: shiftStore.profileCompany,
++			grand_total: cartStore.grandTotal,
++			terminal_amount: terminalAmount,
++			cash_amount: cashAmount,
++			draft_payload: invoicePayload,
++			currency: shiftStore.profileCurrency,
++			customer: customerValue || shiftStore.profileCustomer,
++			customer_name: cartStore.customer?.customer_name || cartStore.customer?.name || customerValue,
++			pos_profile: shiftStore.profileName,
++			pos_opening_shift: shiftStore.currentShift?.name || null,
++			warehouse: shiftStore.profileWarehouse,
++			computer_name: paymentHubConfig.value?.computer_name || null,
++			pos_station: paymentHubConfig.value?.station || null,
++			cart_reference: cartReference,
++			provider_account: terminalMapping?.provider_account || null,
++			payment_terminal: terminalMapping?.payment_terminal || null,
++			payment_method: terminalMapping?.payment_method || "CARD",
++			terminal_mode_of_payment: terminalMode,
++			cash_mode_of_payment: cashMode,
++			idempotency_key: cartReference,
++			auto_complete: 1,
++		},
++	);
++	const result = unwrapPaymentHubResult(callResult);
++
++	uiStore.showPaymentDialog = false;
++	cartStore.clearCart();
++	previousCartHash = "";
++	resetPaymentHubCartReference();
++	if (draftIdToDelete) draftsStore.deleteDraft(draftIdToDelete);
++	await refreshPaymentHubQueueCounts();
++	if (result?.invoice?.name) {
++		showSuccess(__("Terminal payment captured and invoice completed"));
++		await handlePrintInvoice({ name: result.invoice.name });
++	} else {
++		showSuccess(__("Terminal payment started. Check Payment Hub if confirmation is pending."));
++	}
++	return result;
++}
++
++async function handlePaymentHubCompleted(result) {
++	const invoice = result?.invoice;
++	if (!invoice?.name) return;
++	await refreshPaymentHubQueueCounts();
++	loadInvoiceHistoryData().catch((error) =>
++		log.debug("Payment Hub invoice history refresh failed:", error),
++	);
++	await handlePrintInvoice({ name: invoice.name });
++}
++
+ async function handlePaymentCompleted(paymentData) {
+ 	try {
+ 		const customerValue = cartStore.customer?.name || cartStore.customer;
+@@ -2115,6 +2594,18 @@ async function handlePaymentCompleted(paymentData) {
+ 		// Delete draft if it exists (since we're submitting/saving invoice)
+ 		const draftIdToDelete = cartStore.currentDraftId;
+ 
++		const hasElectronicPayment = (paymentData.payments || []).some(
++			(row) => isPaymentHubElectronicMode(row.mode_of_payment) && Number(row.amount || 0) > 0
++		);
++		const hasPhysicalPayment = (paymentData.payments || []).some(
++			(row) => isPaymentHubPhysicalMode(row.mode_of_payment) && Number(row.amount || 0) > 0
++		);
++
++		if (hasElectronicPayment || hasPhysicalPayment) {
++			await startPaymentHubMappedSale(paymentData, customerValue, draftIdToDelete);
++			return;
++		}
++
+ 		if (offlineStore.isOffline) {
+ 			// Use the same item transformation as online flow for consistency
+ 			// This ensures rate, discount_percentage, discount_amount, and pricing_rules
+@@ -3092,4 +3583,26 @@ function handleTabSwitch(tab) {
+ 		uiStore.setMobileTab(tab);
+ 	});
+ }
++// Payment Hub queue badge: light polling complements the backend realtime event.
++onMounted(async () => {
++	await loadPaymentHubConfig();
++	await refreshPaymentHubQueueCounts();
++	paymentHubPollTimer = window.setInterval(refreshPaymentHubQueueCounts, 15000);
++});
++
++onUnmounted(() => {
++	if (paymentHubPollTimer) {
++		window.clearInterval(paymentHubPollTimer);
++		paymentHubPollTimer = null;
++	}
++});
++
++watch(
++	() => [shiftStore.profileName, offlineStore.isOffline],
++	async () => {
++		await loadPaymentHubConfig();
++		await refreshPaymentHubQueueCounts();
++	}
++);
++
+ </script>

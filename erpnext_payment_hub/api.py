@@ -3,7 +3,6 @@ from __future__ import annotations
 from urllib.parse import urlencode
 
 import frappe
-from frappe.exceptions import TimestampMismatchError
 from frappe.utils import flt
 
 from erpnext_payment_hub.gateway import (
@@ -16,6 +15,7 @@ from erpnext_payment_hub.gateway import (
     resolve_payment_terminal,
     resolve_pos_station,
     touch_pos_station,
+    recalculate_original_refunded_amount,
 )
 
 
@@ -205,6 +205,7 @@ def refund_transaction(
     # When a return invoice is supplied, it becomes the idempotency anchor for
     # this source transaction. Reopening/retrying the same return must never send
     # a second provider refund.
+    retry_key = 0
     if reference_name:
         existing = frappe.get_all(
             "Gateway Transaction",
@@ -217,8 +218,12 @@ def refund_transaction(
             fields=["name", "amount", "status", "provider"],
             order_by="creation asc",
         )
-        for row in existing:
-            if abs(flt(row.amount, 3) - amount) <= 0.0005:
+        matching = [
+            row for row in existing
+            if abs(flt(row.amount, 3) - amount) <= 0.0005
+        ]
+        for row in matching:
+            if row.status != "Failed":
                 return {
                     "refund_transaction": row.name,
                     "original_transaction": original.name,
@@ -227,7 +232,12 @@ def refund_transaction(
                     "amount": amount,
                     "reused": True,
                 }
+        retry_key = len([row for row in matching if row.status == "Failed"])
 
+    # A definitively Failed refund attempt releases its reservation and may be
+    # retried deliberately. Pending/completed attempts remain reserved.
+    recalculate_original_refunded_amount(original.name)
+    original.reload()
     available = flt(original.amount, 3) - flt(original.refunded_amount, 3)
     if amount > available + 0.0005:
         frappe.throw(f"Maximum refundable amount is {available:.3f} {original.currency}.")
@@ -241,7 +251,7 @@ def refund_transaction(
         )
 
     provider = get_provider(account)
-    normalized = provider.refund(original, amount, reason=reason)
+    normalized = provider.refund(original, amount, reason=reason, retry_key=retry_key)
 
     refund = create_gateway_transaction(
         transaction_type="Refund",
@@ -263,19 +273,9 @@ def refund_transaction(
         pos_payment_allocation=getattr(original, "pos_payment_allocation", None),
     )
 
-    # Reserve the amount immediately to block duplicate over-refunds. The source
-    # payment can also be touched by callbacks/reconciliation, so retry against
-    # the latest row if Frappe optimistic locking detects a concurrent update.
-    for attempt in range(3):
-        try:
-            original.reload()
-            current = flt(original.refunded_amount, 3)
-            original.refunded_amount = flt(current + amount, 3)
-            original.save(ignore_permissions=True)
-            break
-        except TimestampMismatchError:
-            if attempt >= 2:
-                raise
+    # Rebuild the reservation from Gateway Transactions. Failed attempts are
+    # intentionally excluded so they do not permanently consume refund balance.
+    recalculate_original_refunded_amount(original.name)
 
     return {
         "refund_transaction": refund.name,

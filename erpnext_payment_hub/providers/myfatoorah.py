@@ -242,7 +242,7 @@ class MyFatoorahProvider(BaseProvider):
             "raw": result,
         }
 
-    def refund(self, transaction, amount, reason=None):
+    def refund(self, transaction, amount, reason=None, retry_key=None):
         if transaction.provider_payment_id:
             key_type = "PaymentId"
             key = transaction.provider_payment_id
@@ -255,9 +255,9 @@ class MyFatoorahProvider(BaseProvider):
         amount = float(amount)
         before = float(transaction.refunded_amount or 0)
         # Deterministic for a retry before local refunded_amount is reserved.
-        external_identifier = (
-            f"EPH-{transaction.name}-{before:.3f}-{amount:.3f}"
-        )
+        external_identifier = f"EPH-{transaction.name}-{before:.3f}-{amount:.3f}"
+        if retry_key:
+            external_identifier = f"{external_identifier}-R{int(retry_key)}"
 
         # SAFETY: before another MakeRefund POST, query the invoice for an
         # already-created request. This also recovers legacy v0.1.15 timeouts,

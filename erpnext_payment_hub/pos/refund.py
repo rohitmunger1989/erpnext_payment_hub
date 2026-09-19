@@ -6,6 +6,7 @@ import frappe
 from frappe.utils import cint, flt, now_datetime
 
 from erpnext_payment_hub.pos.authorization import (
+    can_approve_refund,
     mark_authorization_used,
     validate_refund_authorization,
 )
@@ -290,6 +291,198 @@ def _source_response(allocation, *, exclude_return_invoice=None):
     }
 
 
+
+def _json_dict(value):
+    if not value:
+        return {}
+    if isinstance(value, dict):
+        return value
+    try:
+        parsed = json.loads(value)
+        return parsed if isinstance(parsed, dict) else {}
+    except Exception:
+        return {}
+
+
+def _deep_find_first(value, keys):
+    if isinstance(value, dict):
+        for key in keys:
+            candidate = value.get(key)
+            if candidate not in (None, "") and not isinstance(candidate, (dict, list)):
+                return str(candidate)
+        for child in value.values():
+            found = _deep_find_first(child, keys)
+            if found:
+                return found
+    elif isinstance(value, list):
+        for child in value:
+            found = _deep_find_first(child, keys)
+            if found:
+                return found
+    return None
+
+
+def _provider_auth_reference(transaction):
+    if not transaction:
+        return None
+    raw = _json_dict(getattr(transaction, "response_json", None))
+    return _deep_find_first(
+        raw,
+        (
+            "authorization_code",
+            "AuthorizationCode",
+            "authorization_id",
+            "AuthorizationId",
+            "auth_code",
+            "authCode",
+            "approval_code",
+            "approvalCode",
+            "auth",
+            "Auth",
+        ),
+    )
+
+
+def _provider_reference(transaction):
+    if not transaction:
+        return None
+    raw = _json_dict(getattr(transaction, "response_json", None))
+    return (
+        _deep_find_first(
+            raw,
+            (
+                "arn",
+                "ARN",
+                "acquirer_reference_number",
+                "AcquirerReferenceNumber",
+                "reference_number",
+                "ReferenceNumber",
+                "refund_reference",
+                "RefundReference",
+            ),
+        )
+        or getattr(transaction, "provider_tracking_id", None)
+        or getattr(transaction, "provider_payment_id", None)
+    )
+
+
+def _sync_refund_provider_audit_fields(row, refund_txn=None):
+    """Copy provider identifiers onto POS Refund Allocation for audit/templates."""
+    if not refund_txn and row.refund_gateway_transaction and frappe.db.exists(
+        "Gateway Transaction", row.refund_gateway_transaction
+    ):
+        refund_txn = frappe.get_doc("Gateway Transaction", row.refund_gateway_transaction)
+
+    source_txn = None
+    if row.source_gateway_transaction and frappe.db.exists(
+        "Gateway Transaction", row.source_gateway_transaction
+    ):
+        source_txn = frappe.get_doc("Gateway Transaction", row.source_gateway_transaction)
+
+    if refund_txn:
+        row.provider_refund_id = getattr(refund_txn, "provider_refund_id", None)
+        row.provider_reference = _provider_reference(refund_txn)
+        row.refund_provider_transaction_id = getattr(
+            refund_txn, "provider_transaction_id", None
+        )
+
+    row.provider_auth_no = (
+        _provider_auth_reference(refund_txn)
+        or _provider_auth_reference(source_txn)
+    )
+    if source_txn:
+        row.source_provider_transaction_id = getattr(
+            source_txn, "provider_transaction_id", None
+        )
+        row.source_provider_payment_id = getattr(source_txn, "provider_payment_id", None)
+    return row
+
+
+def _recover_refund_gateway_transaction(row):
+    if row.refund_gateway_transaction and frappe.db.exists(
+        "Gateway Transaction", row.refund_gateway_transaction
+    ):
+        return row
+    if not row.source_gateway_transaction:
+        return row
+
+    recovered = _find_refund_gateway_transaction(
+        row.source_gateway_transaction,
+        row.return_invoice,
+        row.amount,
+    )
+    if not recovered:
+        return row
+
+    row.refund_gateway_transaction = recovered.name
+    row.provider_status = recovered.status
+    row.status = _status_from_gateway(recovered.status)
+    if row.status == "Completed":
+        row.error = None
+        if not row.completed_at:
+            row.completed_at = now_datetime()
+    elif row.status == "Failed":
+        row.error = "Provider refund failed. You can retry this refund."
+    _sync_refund_provider_audit_fields(row, recovered)
+    row.save(ignore_permissions=True)
+    return row
+
+
+def _validate_persisted_retry_authorization(row):
+    """Reuse the original manager approval only for the same failed refund intent."""
+    required = _authorization_required_for_channel(row.channel) or bool(cint(row.is_override))
+    if not required:
+        return None
+    if not row.authorization or not frappe.db.exists(
+        "Payment Hub Refund Authorization", row.authorization
+    ):
+        frappe.throw(
+            "The original manager refund authorization is missing. Re-open Process Return and authorize the refund again.",
+            frappe.PermissionError,
+        )
+
+    auth = frappe.get_doc("Payment Hub Refund Authorization", row.authorization)
+    if auth.status in ("Revoked", "Expired"):
+        frappe.throw(
+            "The original manager refund authorization is no longer valid. Re-open Process Return and authorize the refund again.",
+            frappe.PermissionError,
+        )
+    if auth.status == "Valid" and auth.expires_at and auth.expires_at < now_datetime():
+        auth.status = "Expired"
+        auth.save(ignore_permissions=True)
+        frappe.throw(
+            "The original manager refund authorization has expired. Re-open Process Return and authorize the refund again.",
+            frappe.PermissionError,
+        )
+
+    if auth.original_invoice != row.original_invoice or auth.return_invoice != row.return_invoice:
+        frappe.throw("Refund authorization does not match this return invoice.", frappe.PermissionError)
+    if flt(row.amount, 3) > flt(auth.amount, 3) + 0.0005:
+        frappe.throw("Refund amount exceeds the manager-authorized amount.", frappe.PermissionError)
+
+    authorized_sources = _as_list(auth.source_allocations)
+    if authorized_sources and row.source_allocation not in authorized_sources:
+        frappe.throw("Refund authorization does not cover this payment source.", frappe.PermissionError)
+
+    if cint(row.is_override):
+        if not cint(auth.is_override) or auth.action != "Refund Override":
+            frappe.throw("Cash refund override authorization is missing.", frappe.PermissionError)
+        if (
+            auth.override_channel != (row.actual_refund_channel or row.channel)
+            or auth.override_mode_of_payment
+            != (row.actual_refund_mode_of_payment or row.mode_of_payment)
+        ):
+            frappe.throw("Refund override target does not match the manager authorization.", frappe.PermissionError)
+
+    if auth.cashier_user and auth.cashier_user != frappe.session.user and not can_approve_refund(
+        frappe.session.user
+    ):
+        frappe.throw(
+            "This refund was authorized for another cashier. Ask a refund approver/admin to retry it.",
+            frappe.PermissionError,
+        )
+    return auth
+
 def _refund_allocation_response(row):
     row.reload()
     gateway_status = None
@@ -317,7 +510,12 @@ def _refund_allocation_response(row):
         "currency": row.currency,
         "status": row.status,
         "provider_status": row.provider_status or gateway_status,
-        "provider_refund_id": provider_refund_id,
+        "provider_refund_id": getattr(row, "provider_refund_id", None) or provider_refund_id,
+        "provider_reference": getattr(row, "provider_reference", None),
+        "provider_auth_no": getattr(row, "provider_auth_no", None),
+        "refund_provider_transaction_id": getattr(row, "refund_provider_transaction_id", None),
+        "source_provider_transaction_id": getattr(row, "source_provider_transaction_id", None),
+        "source_provider_payment_id": getattr(row, "source_provider_payment_id", None),
         "actual_refund_channel": row.actual_refund_channel or row.channel,
         "actual_refund_mode_of_payment": row.actual_refund_mode_of_payment or row.mode_of_payment,
         "is_override": bool(row.is_override),
@@ -328,6 +526,20 @@ def _refund_allocation_response(row):
         "override_reason": row.override_reason,
         "reason": row.reason,
         "error": row.error,
+        "can_retry": row.status == "Failed",
+        "can_check": row.status in ("Reserved", "Processing", "Pending", "Failed", "Manual Review"),
+        "refund_attempt_count": frappe.db.count(
+            "Gateway Transaction",
+            {
+                "transaction_type": "Refund",
+                "original_transaction": row.source_gateway_transaction,
+                "reference_doctype": "Sales Invoice",
+                "reference_name": row.return_invoice,
+            },
+        ) if row.source_gateway_transaction else 0,
+        "refund_whatsapp_sent_at": getattr(row, "refund_whatsapp_sent_at", None),
+        "refund_whatsapp_message": getattr(row, "refund_whatsapp_message", None),
+        "refund_whatsapp_error": getattr(row, "refund_whatsapp_error", None),
     }
 
 
@@ -337,6 +549,36 @@ def _status_from_gateway(gateway_status):
     if gateway_status == "Failed":
         return "Failed"
     return "Pending"
+
+
+def _maybe_send_refund_whatsapp(row):
+    """Send one best-effort WhatsApp confirmation after a refund completes."""
+    row.reload()
+    if row.status != "Completed" or getattr(row, "refund_whatsapp_sent_at", None):
+        return None
+
+    try:
+        from erpnext_payment_hub.pos.whatsapp import send_refund_message
+
+        result = send_refund_message(refund_allocation=row)
+        if result and result.get("skipped"):
+            return result
+        row.reload()
+        if not getattr(row, "refund_whatsapp_sent_at", None):
+            row.refund_whatsapp_sent_at = now_datetime()
+            row.refund_whatsapp_message = (result or {}).get("message_name")
+            row.refund_whatsapp_error = None
+            row.save(ignore_permissions=True)
+        return result
+    except Exception as exc:
+        row.reload()
+        row.refund_whatsapp_error = str(exc)[:1000]
+        row.save(ignore_permissions=True)
+        frappe.log_error(
+            title=f"Payment Hub refund WhatsApp failed: {row.name}",
+            message=frappe.get_traceback(),
+        )
+        return None
 
 
 def sync_refund_allocation_from_gateway(gateway_doc):
@@ -358,7 +600,12 @@ def sync_refund_allocation_from_gateway(gateway_doc):
         row.error = None
         if not row.completed_at:
             row.completed_at = now_datetime()
+    elif row.status == "Failed":
+        row.error = "Provider refund failed. You can retry this refund."
+    _sync_refund_provider_audit_fields(row, gateway_doc)
     row.save(ignore_permissions=True)
+    if row.status == "Completed":
+        _maybe_send_refund_whatsapp(row)
     return row
 
 
@@ -528,24 +775,31 @@ def _create_refund_row(
 
 
 
-def _find_refund_gateway_transaction(original_transaction, return_invoice, amount):
+def _find_refund_gateway_transaction(
+    original_transaction, return_invoice, amount, *, exclude_transactions=None
+):
+    filters = {
+        "transaction_type": "Refund",
+        "original_transaction": original_transaction,
+        "reference_doctype": "Sales Invoice",
+        "reference_name": return_invoice,
+    }
     rows = frappe.get_all(
         "Gateway Transaction",
-        filters={
-            "transaction_type": "Refund",
-            "original_transaction": original_transaction,
-            "reference_doctype": "Sales Invoice",
-            "reference_name": return_invoice,
-        },
-        fields=["name", "amount"],
-        order_by="creation asc",
+        filters=filters,
+        fields=["name", "amount", "status"],
+        order_by="creation desc",
     )
+    excluded = set(exclude_transactions or [])
     for row in rows:
+        if row.name in excluded:
+            continue
         if abs(flt(row.amount, 3) - flt(amount, 3)) <= 0.0005:
             return frappe.get_doc("Gateway Transaction", row.name)
     return None
 
 def _refresh_refund_row(row):
+    row = _recover_refund_gateway_transaction(row)
     if not row.refund_gateway_transaction:
         return row
     from erpnext_payment_hub.api import refresh_transaction
@@ -554,9 +808,17 @@ def _refresh_refund_row(row):
     row.reload()
     row.provider_status = result.get("status")
     row.status = _status_from_gateway(result.get("status"))
+    refund_txn = frappe.get_doc("Gateway Transaction", row.refund_gateway_transaction)
+    _sync_refund_provider_audit_fields(row, refund_txn)
     if row.status == "Completed":
         row.error = None
+        if not row.completed_at:
+            row.completed_at = now_datetime()
+    elif row.status == "Failed":
+        row.error = "Provider refund failed. You can retry this refund."
     row.save(ignore_permissions=True)
+    if row.status == "Completed":
+        _maybe_send_refund_whatsapp(row)
     return row
 
 
@@ -715,13 +977,22 @@ def process_pos_return_refund(
         if row.status == "Completed":
             results.append(_refund_allocation_response(row))
             continue
+        previous_failed_transaction = None
         if row.refund_gateway_transaction:
-            try:
-                row = _refresh_refund_row(row)
-            except Exception:
-                row.reload()
-            results.append(_refund_allocation_response(row))
-            continue
+            # Pending/provider-owned attempts must be checked/reused, never duplicated.
+            # A definitively Failed attempt is safe to retry as a new Gateway Transaction.
+            if row.status != "Failed":
+                try:
+                    row = _refresh_refund_row(row)
+                except Exception:
+                    row.reload()
+            if row.status != "Failed":
+                results.append(_refund_allocation_response(row))
+                continue
+            previous_failed_transaction = row.refund_gateway_transaction
+            row.error = "Previous provider refund failed. A new refund attempt may be created."
+            row.save(ignore_permissions=True)
+            frappe.db.commit()
         if row.status in ("Processing", "Manual Review"):
             # A reservation without a gateway transaction means a previous external
             # request may have failed after leaving ERPNext. Never auto-repeat it.
@@ -746,6 +1017,7 @@ def process_pos_return_refund(
                 row.completed_at = now_datetime()
             row.save(ignore_permissions=True)
             frappe.db.commit()
+            _maybe_send_refund_whatsapp(row)
             results.append(_refund_allocation_response(row))
             continue
 
@@ -768,23 +1040,38 @@ def process_pos_return_refund(
             row.refund_gateway_transaction = refund_name
             row.provider_status = refund_txn.status
             row.status = _status_from_gateway(refund_txn.status)
-            row.error = None if row.status != "Failed" else "Provider refund failed."
+            _sync_refund_provider_audit_fields(row, refund_txn)
+            row.error = (
+                None
+                if row.status != "Failed"
+                else "Provider refund failed. You can retry this refund."
+            )
             if row.status == "Completed" and not row.completed_at:
                 row.completed_at = now_datetime()
             row.save(ignore_permissions=True)
             frappe.db.commit()
+            if row.status == "Completed":
+                _maybe_send_refund_whatsapp(row)
         except Exception as exc:
             # If the provider call succeeded but a later local save failed, recover
             # the Gateway Transaction by the return-invoice idempotency anchor.
             recovered = _find_refund_gateway_transaction(
-                allocation.gateway_transaction, return_invoice, amount
+                allocation.gateway_transaction,
+                return_invoice,
+                amount,
+                exclude_transactions=[previous_failed_transaction] if previous_failed_transaction else None,
             )
             row.reload()
             if recovered:
                 row.refund_gateway_transaction = recovered.name
                 row.provider_status = recovered.status
                 row.status = _status_from_gateway(recovered.status)
-                row.error = None if row.status != "Failed" else str(exc)[:1000]
+                _sync_refund_provider_audit_fields(row, recovered)
+                row.error = (
+                    None
+                    if row.status != "Failed"
+                    else "Provider refund failed. You can retry this refund."
+                )
                 if row.status == "Completed" and not row.completed_at:
                     row.completed_at = now_datetime()
             else:
@@ -794,6 +1081,8 @@ def process_pos_return_refund(
                 row.error = str(exc)[:1000]
             row.save(ignore_permissions=True)
             frappe.db.commit()
+            if row.status == "Completed":
+                _maybe_send_refund_whatsapp(row)
 
         results.append(_refund_allocation_response(row))
 
@@ -959,12 +1248,165 @@ def refresh_return_refunds(return_invoice):
     )
     for name in names:
         row = frappe.get_doc("POS Refund Allocation", name)
-        if row.status in ("Pending", "Processing") and row.refund_gateway_transaction:
-            try:
+        if row.status not in ("Reserved", "Pending", "Processing", "Failed", "Manual Review"):
+            continue
+        try:
+            row = _recover_refund_gateway_transaction(row)
+            if row.refund_gateway_transaction:
                 _refresh_refund_row(row)
-            except Exception:
-                frappe.log_error(
-                    title=f"Payment Hub return refund refresh failed: {row.name}",
-                    message=frappe.get_traceback(),
+        except Exception:
+            frappe.log_error(
+                title=f"Payment Hub return refund refresh failed: {row.name}",
+                message=frappe.get_traceback(),
+            )
+    return get_return_refund_status(return_invoice)
+
+
+@frappe.whitelist()
+def retry_failed_return_refunds(return_invoice):
+    """Retry only provider refunds that are definitively Failed.
+
+    The old failed Gateway Transaction stays in history. Before a new external
+    refund is sent, Payment Hub re-checks providers that expose refund-status
+    lookup and reuses the original manager authorization bound to this exact
+    return invoice/source/amount.
+    """
+    return_doc = frappe.get_doc("Sales Invoice", return_invoice)
+    if return_doc.docstatus != 0 or not cint(return_doc.is_return) or not return_doc.return_against:
+        frappe.throw("Retry Refund requires a Draft return invoice.")
+
+    names = frappe.get_all(
+        "POS Refund Allocation",
+        filters={"return_invoice": return_invoice, "status": "Failed"},
+        pluck="name",
+        order_by="creation asc",
+    )
+    if not names:
+        return get_return_refund_status(return_invoice)
+
+    for name in names:
+        frappe.db.sql(
+            "SELECT name FROM `tabPOS Refund Allocation` WHERE name=%s FOR UPDATE",
+            (name,),
+        )
+        row = frappe.get_doc("POS Refund Allocation", name)
+        if row.status != "Failed":
+            continue
+
+        previous_failed_transaction = row.refund_gateway_transaction
+        if previous_failed_transaction and frappe.db.exists(
+            "Gateway Transaction", previous_failed_transaction
+        ):
+            previous_txn = frappe.get_doc("Gateway Transaction", previous_failed_transaction)
+            if previous_txn.status != "Failed":
+                row.provider_status = previous_txn.status
+                row.status = _status_from_gateway(previous_txn.status)
+                _sync_refund_provider_audit_fields(row, previous_txn)
+                row.save(ignore_permissions=True)
+                continue
+
+            # If the adapter can re-query a refund, verify the final Failed state
+            # immediately before creating a replacement attempt.
+            from erpnext_payment_hub.gateway import (
+                get_provider,
+                get_provider_account,
+                update_transaction_from_status,
+            )
+
+            account = get_provider_account(previous_txn.provider_account)
+            provider = get_provider(account)
+            if hasattr(provider, "get_refund_status"):
+                try:
+                    normalized = provider.get_refund_status(previous_txn)
+                    update_transaction_from_status(previous_txn, normalized)
+                    row.reload()
+                except Exception:
+                    frappe.throw(
+                        "Unable to verify the failed refund with the provider. Use Check Refund and review the provider before retrying."
+                    )
+                if row.status != "Failed":
+                    continue
+
+        _validate_persisted_retry_authorization(row)
+
+        allocation = frappe.get_doc("POS Payment Allocation", row.source_allocation)
+        if allocation.status not in ("Captured", "Refunded"):
+            frappe.throw(
+                f"{allocation.name} is no longer a captured/refundable payment source."
+            )
+        source = _source_response(allocation, exclude_return_invoice=return_invoice)
+        if flt(row.amount, 3) > flt(source["refundable_amount"], 3) + 0.0005:
+            frappe.throw(
+                f"Maximum refundable amount for {allocation.name} is "
+                f"{flt(source['refundable_amount'], 3):.3f} {allocation.currency}."
+            )
+
+        row.status = "Processing"
+        row.error = None
+        # A previous pending notification must not suppress the final successful
+        # confirmation for this new attempt.
+        row.refund_whatsapp_sent_at = None
+        row.refund_whatsapp_message = None
+        row.refund_whatsapp_error = None
+        row.save(ignore_permissions=True)
+        frappe.db.commit()
+
+        try:
+            from erpnext_payment_hub.api import refund_transaction
+
+            result = refund_transaction(
+                allocation.gateway_transaction,
+                row.amount,
+                reason=row.reason or "POS customer return retry",
+                reference_doctype="Sales Invoice",
+                reference_name=return_invoice,
+            )
+            refund_name = result.get("refund_transaction")
+            refund_txn = frappe.get_doc("Gateway Transaction", refund_name)
+            row.reload()
+            row.refund_gateway_transaction = refund_name
+            row.provider_status = refund_txn.status
+            row.status = _status_from_gateway(refund_txn.status)
+            _sync_refund_provider_audit_fields(row, refund_txn)
+            row.error = (
+                None
+                if row.status != "Failed"
+                else "Provider refund failed. You can retry this refund."
+            )
+            if row.status == "Completed" and not row.completed_at:
+                row.completed_at = now_datetime()
+            row.save(ignore_permissions=True)
+            frappe.db.commit()
+            if row.status == "Completed":
+                _maybe_send_refund_whatsapp(row)
+        except Exception as exc:
+            recovered = _find_refund_gateway_transaction(
+                allocation.gateway_transaction,
+                return_invoice,
+                row.amount,
+                exclude_transactions=[previous_failed_transaction]
+                if previous_failed_transaction
+                else None,
+            )
+            row.reload()
+            if recovered:
+                row.refund_gateway_transaction = recovered.name
+                row.provider_status = recovered.status
+                row.status = _status_from_gateway(recovered.status)
+                _sync_refund_provider_audit_fields(row, recovered)
+                row.error = (
+                    None
+                    if row.status != "Failed"
+                    else "Provider refund failed. You can retry this refund."
                 )
+                if row.status == "Completed" and not row.completed_at:
+                    row.completed_at = now_datetime()
+            else:
+                row.status = "Manual Review"
+                row.error = str(exc)[:1000]
+            row.save(ignore_permissions=True)
+            frappe.db.commit()
+            if row.status == "Completed":
+                _maybe_send_refund_whatsapp(row)
+
     return get_return_refund_status(return_invoice)

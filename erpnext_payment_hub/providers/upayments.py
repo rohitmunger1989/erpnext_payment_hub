@@ -83,17 +83,30 @@ class UPaymentsProvider(BaseProvider):
         terminal=None,
         pos_context=None,
     ):
+        # UPayments/KNET requires a unique merchant transaction reference for
+        # every payment attempt.  A POS Payment Session (PPS) can have several
+        # electronic allocations (PPA) when the cashier retries an abandoned or
+        # expired link, so using the PPS name for every charge can reuse the same
+        # merchant reference.  Prefer the allocation/attempt reference while
+        # retaining the PPS in the description and extra data for audit.
+        pos_context = pos_context or {}
+        attempt_reference = (
+            pos_context.get("pos_payment_allocation")
+            or pos_context.get("attempt_reference")
+            or reference_name
+        )
+
         payload = {
             "order": {
-                "id": reference_name[:40],
-                "reference": reference_name,
+                "id": str(attempt_reference)[:40],
+                "reference": str(attempt_reference),
                 "description": f"{reference_doctype} {reference_name}",
                 "currency": currency,
                 "amount": float(amount),
             },
             "language": "en",
             "tokens": {},
-            "reference": {"id": reference_name[:35]},
+            "reference": {"id": str(attempt_reference)[:35]},
             "customer": {
                 "uniqueId": reference_name[:50],
                 "name": (customer.get("name") or "Customer")[:50],
@@ -104,7 +117,9 @@ class UPaymentsProvider(BaseProvider):
                     else ""
                 ),
             },
-            "customerExtraData": f"{reference_doctype}:{reference_name}",
+            "customerExtraData": (
+                f"{reference_doctype}:{reference_name}|attempt:{attempt_reference}"
+            ),
             "returnUrl": return_url,
             "cancelUrl": cancel_url or return_url,
             "notificationUrl": webhook_url or return_url,
@@ -137,7 +152,7 @@ class UPaymentsProvider(BaseProvider):
 
         return {
             "provider_transaction_id": data.get("payment_id") or data.get("paymentId"),
-            "provider_order_id": data.get("order_id") or data.get("orderId") or reference_name,
+            "provider_order_id": data.get("order_id") or data.get("orderId") or str(attempt_reference),
             "provider_payment_id": data.get("payment_id") or data.get("paymentId"),
             "provider_tracking_id": data.get("track_id") or data.get("trackId"),
             "provider_session_id": session_id,
@@ -161,7 +176,7 @@ class UPaymentsProvider(BaseProvider):
         return self._parse_status_response(result, transaction=transaction)
 
 
-    def refund(self, transaction, amount, reason=None):
+    def refund(self, transaction, amount, reason=None, retry_key=None):
         if self.account.test_mode:
             raise ProviderError(
                 "UPayments does not process refunds in Sandbox/Test Mode. "
@@ -175,7 +190,11 @@ class UPaymentsProvider(BaseProvider):
         payload = {
             "orderId": transaction.provider_order_id,
             "totalPrice": float(amount),
-            "reference": transaction.reference_name or transaction.name,
+            "reference": (
+                f"{transaction.reference_name or transaction.name}-R{int(retry_key)}"
+                if retry_key
+                else (transaction.reference_name or transaction.name)
+            ),
             "notifyUrl": (
                 f"{__import__('frappe').utils.get_url()}/api/method/"
                 "erpnext_payment_hub.webhook.upayments_refund"

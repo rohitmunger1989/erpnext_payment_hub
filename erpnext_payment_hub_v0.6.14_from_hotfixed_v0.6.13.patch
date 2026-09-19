@@ -1,0 +1,1501 @@
+diff --git a/CHANGELOG.md b/CHANGELOG.md
+new file mode 100644
+index 0000000000000000000000000000000000000000..01e0bf8ba37aff2e089b196968299775ea01430f
+--- /dev/null
++++ b/CHANGELOG.md
+@@ -0,0 +1,55 @@
++# Changelog
++
++All notable Payment Hub release changes are summarized here.
++
++## v0.6.14 — 2026-09-19
++
++### Added
++- Copy Link action in Payment Hub Waiting/Paid/Failed queue records when a stored payment URL exists.
++- Complete POSNext v2.0.0 (`e0a52c5`) consolidated integration patch including `PaymentHubPendingDialog.vue`.
++- GitHub-ready installation, integration and release documentation.
++
++### Fixed
++- `get_sales_queue()` now returns the latest electronic `payment_url`, allowing the Copy Link UI to render.
++- UPayments/KNET uses the PPA attempt reference for `order.id`, `order.reference` and `reference.id`, preventing duplicate merchant reference errors when a PPS gets a new link.
++- Waiting queue wording now says `WhatsApp attempt N` rather than implying delivery before the provider webhook confirms it.
++
++### Preserved
++- v0.6.13 refund recovery/status/retry workflow.
++- v0.6.11/v0.6.9 payment recovery, stale draft self-healing and cross-shift safety.
++- v0.6.8 mapping/split tender/refund/printing/WhatsApp/reporting foundation.
++
++## v0.6.13
++
++- Added Check Refund / Retry Refund / Complete Return actions in POS invoice details.
++- Added fail-closed refund retry behavior and provider refund status checks.
++- Added provider refund audit identifiers to POS Refund Allocation.
++- Refund WhatsApp confirmation is sent only after refund completion.
++
++## v0.6.12
++
++- Added refund retry foundations and refund WhatsApp configuration.
++- Kept uncertain external refund results in Manual Review instead of blind duplicate retries.
++
++## v0.6.11
++
++- Added customer-friendly payment return status page.
++- Prevented Create New Link actions on closed/expired sessions.
++- Made global/provider fallback payment-link lifetime optional; blank/0 no longer forces 1440 minutes.
++- Preserved recovery and stale draft fixes from the v0.6.9 maintenance line.
++
++## v0.6.9 maintenance
++
++- Added stale deleted-draft invoice self-healing.
++- Protected recoverable Payment Hub drafts from POSNext cleanup.
++- Improved cross-shift captured-payment recovery.
++- Improved payment-attempt status/recovery handling.
++
++## v0.6.8
++
++- Stable rollback baseline.
++- Provider-aware link expiry and fallback configuration.
++- Manual / Non-Cash channel.
++- Mapping-aware multi-provider split tender.
++- Cash tender/applied/change separation.
++- Original-provider refund controls, reporting, printing and WhatsApp integration.
+diff --git a/INSTALL_v0.6.14.md b/INSTALL_v0.6.14.md
+new file mode 100644
+index 0000000000000000000000000000000000000000..4dcc54d917e5be785f4eab844d521199590a16da
+--- /dev/null
++++ b/INSTALL_v0.6.14.md
+@@ -0,0 +1,277 @@
++# ERPNext Payment Hub v0.6.14 — Full Setup
++
++This package contains the complete Payment Hub backend source plus POSNext integration patches and documentation.
++
++## Package targets
++
++- Payment Hub: `v0.6.14`
++- Frappe / ERPNext: `15` or `16`
++- POSNext: `v2.0.0`, commit `e0a52c5`
++- Site used in the examples: `erp.bm-kw.com`
++
++## Important before changing the live server
++
++Make a database backup and inspect Git state first:
++
++```bash
++cd ~/frappe-bench
++bench --site erp.bm-kw.com backup --with-files
++
++echo '=== PAYMENT HUB ==='
++cd ~/frappe-bench/apps/erpnext_payment_hub
++git status --short
++grep '__version__' erpnext_payment_hub/__init__.py
++
++echo '=== POSNEXT ==='
++cd ~/frappe-bench/apps/pos_next
++git status --short
++git rev-parse --short HEAD
++git describe --tags --exact-match 2>/dev/null || git describe --tags --always
++```
++
++Do not use `git reset --hard` on the live repositories unless you have intentionally backed up local changes.
++
++---
++
++# A. Upgrade an existing v0.6.13 installation
++
++Use this path when Payment Hub is already installed and currently reports `0.6.13`.
++
++## A1. Backend pre-check
++
++Place this file in `~/frappe-bench/apps/erpnext_payment_hub/`:
++
++```text
++erpnext_payment_hub_v0.6.14_from_v0.6.13.patch
++```
++
++Then:
++
++```bash
++cd ~/frappe-bench/apps/erpnext_payment_hub
++
++git apply --check erpnext_payment_hub_v0.6.14_from_v0.6.13.patch
++echo "BACKEND CHECK=$?"
++```
++
++Expected for an untouched v0.6.13 source:
++
++```text
++BACKEND CHECK=0
++```
++
++If it is not `0`, stop. The live source may already contain one or more v0.6.14 hotfixes. Do not force-apply the patch.
++
++## A2. POSNext pre-check
++
++First check whether Copy Link is already present:
++
++```bash
++grep -n 'Copy Link\|copyPaymentLink\|WhatsApp attempt' \
++  ~/frappe-bench/apps/pos_next/POS/src/components/sale/PaymentHubPendingDialog.vue
++```
++
++If `Copy Link` and `copyPaymentLink` are already present, **do not apply the incremental POS patch just to get Copy Link**. The v0.6.14 final UI also changes the status text from `WhatsApp sent N time(s)` to `WhatsApp attempt N`; that one-line wording may be applied later after comparing the file.
++
++For an untouched v0.6.13 Payment Hub POS adapter, place:
++
++```text
++pos_next_payment_hub_v0.6.14_from_v0.6.13_live.patch
++```
++
++in `~/frappe-bench/apps/pos_next/`, then:
++
++```bash
++cd ~/frappe-bench/apps/pos_next
++
++git apply --check pos_next_payment_hub_v0.6.14_from_v0.6.13_live.patch
++echo "POS CHECK=$?"
++```
++
++Expected:
++
++```text
++POS CHECK=0
++```
++
++## A3. Apply only after checks pass
++
++Backend:
++
++```bash
++cd ~/frappe-bench/apps/erpnext_payment_hub
++git apply erpnext_payment_hub_v0.6.14_from_v0.6.13.patch
++```
++
++POSNext, only if its check passed and the patch is actually needed:
++
++```bash
++cd ~/frappe-bench/apps/pos_next
++git apply pos_next_payment_hub_v0.6.14_from_v0.6.13_live.patch
++```
++
++## A4. Build / migrate / restart
++
++If any POSNext source changed:
++
++```bash
++cd ~/frappe-bench/apps/pos_next/POS
++npm run build
++npm run copy-html-entry
++```
++
++Then:
++
++```bash
++cd ~/frappe-bench
++./env/bin/pip install -e apps/erpnext_payment_hub
++bench --site erp.bm-kw.com migrate
++bench --site erp.bm-kw.com clear-cache
++bench restart
++```
++
++Hard refresh POS with `Ctrl + Shift + R`.
++
++## A5. Verify
++
++```bash
++cd ~/frappe-bench
++
++echo '=== PAYMENT HUB VERSION ==='
++grep '__version__' apps/erpnext_payment_hub/erpnext_payment_hub/__init__.py
++
++echo '=== COPY LINK API ==='
++grep -n -A4 -B2 'row\["payment_url"\]' \
++  apps/erpnext_payment_hub/erpnext_payment_hub/pos/api.py
++
++echo '=== UPAYMENTS ATTEMPT REFERENCE ==='
++grep -n -A16 -B3 'attempt_reference' \
++  apps/erpnext_payment_hub/erpnext_payment_hub/providers/upayments.py
++
++echo '=== POS COPY LINK ==='
++grep -n 'Copy Link\|copyPaymentLink\|WhatsApp attempt' \
++  apps/pos_next/POS/src/components/sale/PaymentHubPendingDialog.vue
++```
++
++Expected source version:
++
++```text
++__version__ = "0.6.14"
++```
++
++---
++
++# B. Clean POSNext v2.0.0 integration
++
++Use this only when POSNext is a clean `e0a52c5` checkout with no Payment Hub POS modifications.
++
++Verify:
++
++```bash
++cd ~/frappe-bench/apps/pos_next
++git status --short
++git rev-parse --short HEAD
++git describe --tags --exact-match 2>/dev/null || git describe --tags --always
++```
++
++Expected base:
++
++```text
++e0a52c5
++v2.0.0
++```
++
++Check the consolidated patch:
++
++```bash
++git apply --check \
++  ../erpnext_payment_hub/integrations/pos_next/pos_next_payment_hub_v0.6.14_posnext_v2.0.0_e0a52c5.patch
++
++echo "POS CLEAN CHECK=$?"
++```
++
++If `0`, apply:
++
++```bash
++git apply \
++  ../erpnext_payment_hub/integrations/pos_next/pos_next_payment_hub_v0.6.14_posnext_v2.0.0_e0a52c5.patch
++```
++
++Build:
++
++```bash
++cd ~/frappe-bench/apps/pos_next/POS
++npm install
++npm run build
++npm run copy-html-entry
++
++cd ~/frappe-bench
++bench --site erp.bm-kw.com clear-cache
++bench restart
++```
++
++The consolidated patch includes the complete Payment Hub POS integration, including the new `PaymentHubPendingDialog.vue` file.
++
++---
++
++# C. Fresh Payment Hub installation
++
++Recommended production method: put the v0.6.14 source in your Git repository, test it, then install/upgrade using Git/Bench.
++
++For a site where Payment Hub is not installed yet:
++
++```bash
++cd ~/frappe-bench
++bench get-app https://github.com/rohitmunger1989/erpnext_payment_hub.git --branch main
++bench --site erp.bm-kw.com install-app erpnext_payment_hub
++bench --site erp.bm-kw.com migrate
++bench --site erp.bm-kw.com clear-cache
++bench restart
++```
++
++After v0.6.14 is tagged on GitHub, pin deployments to the tested tag rather than an arbitrary later `main` commit.
++
++The supplied `erpnext_payment_hub_v0.6.14_full.zip` is the complete source snapshot for backup/review/GitHub publication. It intentionally does not contain `.git` history.
++
++---
++
++# D. Recommended configuration
++
++```text
++Pending Sale Retention (Hours): 24
++Fallback Payment Link Lifetime (Minutes): blank/0 unless a provider needs a fallback
++Auto Expire Stale Pending Sales: enabled if desired
++```
++
++Provider expiry priority:
++
++```text
++provider expiry → provider-account fallback → global fallback → provider-native behavior
++```
++
++For WhatsApp, verify your connected WhatsApp Business Account is in good billing standing. Meta error `131042` means the WhatsApp Business account has unsettled payments; settle the Meta balance before retrying delivery.
++
++---
++
++# E. v0.6.14 live test checklist
++
++Test before committing/tagging:
++
++- Cash and Manual / Non-Cash
++- Tap / MyFatoorah / UPayments new payment links
++- UPayments retry/new link after a failed/expired attempt
++- Copy Link in Waiting / Paid / Failed
++- Waiting queue WhatsApp attempt/status display
++- split tender and cash change
++- stale/deleted draft self-heal
++- shift closure while payment is pending
++- capture after shift closure
++- WhatsApp delivered/read/failed
++- draft receipt/A4 and final receipt printing
++- completed refunds
++- Check Refund / Retry Refund / Complete Return
++- customer without mobile during refund completion
++- POS Profile isolation
++- reports/reconciliation
++
++Do not tag/push v0.6.14 until these tests pass.
+diff --git a/README.md b/README.md
+index a1bc6a764c1356c31d4a9ab26bdc97c0e4c7d9d1..65e917eb0683bde08cdf47f9ef9ed132bf96f939 100644
+--- a/README.md
++++ b/README.md
+@@ -2,314 +2,264 @@
+ 
+ **Provider-agnostic payment orchestration for ERPNext and POSNext**
+ 
+-[![Version](https://img.shields.io/badge/version-v0.6.13-blue.svg)](https://github.com/rohitmunger1989/erpnext_payment_hub/releases/tag/v0.6.13)
+-[![Frappe](https://img.shields.io/badge/Frappe-15%20%7C%2016-5e64ff.svg)](https://frappeframework.com/)
+-[![ERPNext](https://img.shields.io/badge/ERPNext-15%20%7C%2016-0089ff.svg)](https://erpnext.com/)
+-[![License](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
++![Version](https://img.shields.io/badge/version-v0.6.14-blue.svg)
++![Frappe](https://img.shields.io/badge/Frappe-15%20%7C%2016-5e64ff.svg)
++![ERPNext](https://img.shields.io/badge/ERPNext-15%20%7C%2016-0089ff.svg)
++![License](https://img.shields.io/badge/license-MIT-green.svg)
+ 
+-ERPNext Payment Hub provides a common payment layer for ERPNext with provider routing, POSNext payment sessions, asynchronous payment links, split tender, refund controls, transaction history, reconciliation reports, and audit-safe payment records.
++ERPNext Payment Hub provides one payment layer for ERPNext/POSNext with provider routing, POS payment sessions, asynchronous hosted-payment links, split tender, WhatsApp delivery, print flows, refunds, recovery, reconciliation and audit records.
+ 
+-The app is designed so ERPNext and POSNext work with **Payment Hub channels** instead of hardcoding a provider name into the POS flow.
++The POS flow works with **Payment Hub channels** rather than hardcoding provider names into the cashier UI.
+ 
+----
++## Current release
+ 
+-## Current Release
++**v0.6.14**
+ 
+-**ERPNext Payment Hub v0.6.13**
++- Frappe: `>=15,<17`
++- ERPNext: `>=15,<17`
++- Python: `>=3.10`
++- POSNext integration target: `v2.0.0` / commit `e0a52c5`
++- Permanent rollback baseline retained separately: `v0.6.8`
+ 
+-- Release: `v0.6.13`
+-- Previous tested rollback tag: `v0.6.11`
+-- POSNext tested source: `v2.0.0` / commit `e0a52c5`
+-- Python: `>= 3.10`
+-- Frappe: `>= 15, < 17`
+-- ERPNext: `>= 15, < 17`
++> POSNext source can be tagged `v2.0.0` at commit `e0a52c5` while `bench version` still reports package metadata such as `pos_next 1.17.0 HEAD`.
+ 
+-> POSNext's Git source is tagged `v2.0.0` at `e0a52c5`. Depending on the POSNext package metadata, `bench version` may still display `pos_next 1.17.0 HEAD`.
++## What is new in v0.6.14
+ 
+----
++v0.6.14 consolidates the tested v0.6.13 refund work and the post-v0.6.13 maintenance fixes into one GitHub-ready source package.
+ 
+-## Highlights
++### Copy payment link
+ 
+-### Provider-agnostic payment routing
++The Payment Hub **Waiting / Paid / Failed** queue can show **Copy Link** whenever the latest electronic allocation or Gateway Transaction has a stored `payment_url`.
+ 
+-Payment Hub can route any ERPNext **Mode of Payment** through a configurable mapping.
++- Waiting: copies the current stored link.
++- Paid: copies the historical stored link for audit/support use.
++- Failed: copies the historical stored link; copying it does not make an expired/failed link reusable.
++- No stored URL: the button is hidden.
+ 
+-Supported internal channels:
++The backend queue now returns `payment_url` explicitly so the POS button can render reliably.
+ 
+-- `Cash`
+-- `Manual / Non-Cash`
+-- `Electronic Payment`
+-- `Physical Payment Terminal`
++### UPayments duplicate merchant reference fix
+ 
+-Example mappings:
++UPayments/KNET payment attempts now use the **POS Payment Allocation (PPA)** as the merchant attempt reference instead of reusing the parent **POS Payment Session (PPS)** for every retry.
+ 
+-| ERPNext Mode of Payment | Payment Hub Channel | Provider Account | Terminal |
+-| --- | --- | --- | --- |
+-| Cash | Cash | — | — |
+-| Cheque | Manual / Non-Cash | — | — |
+-| Bank Transfer | Manual / Non-Cash | — | — |
+-| Tap Payment | Electronic Payment | BM Tap Live | — |
+-| MyFatoorah | Electronic Payment | BM MyFatoorah | — |
+-| UPayment | Electronic Payment | BM UPayments | — |
+-| TAP Terminal | Physical Payment Terminal | BM Tap Terminal | TAP POS 01 |
++This prevents a new payment attempt from reusing the same merchant-side reference and addresses provider errors such as:
+ 
+-Mappings may be global or POS Profile-specific. A POS Profile-specific mapping takes priority over a global mapping.
++```text
++IPAY01000305 - Duplicate Merchant Track Id
++```
++
++The PPS is still retained in the description/audit context.
++
++### Clearer WhatsApp attempt wording
++
++The Waiting queue now labels the counter as **WhatsApp attempt N** instead of implying that every attempt was successfully delivered. The actual WhatsApp status is still shown when available (`sent`, `delivered`, `read`, `failed`).
++
++## Core design
+ 
+----
++### Payment Hub channels
+ 
+-## Supported Payment Providers
++| Channel | Purpose | Can create change? |
++| --- | --- | --- |
++| Cash | Normal cash tender | Yes |
++| Manual / Non-Cash | Cheque, bank transfer, other accepted offline non-cash methods | No |
++| Electronic Payment | Hosted/provider payment links | No |
++| Physical Payment Terminal | SmartPOS/ECR terminal route | No |
+ 
+-Included hosted/online payment adapters:
++Any ERPNext **Mode of Payment** can be mapped to a channel. Mappings may be global or POS Profile-specific; a POS Profile-specific mapping takes priority.
+ 
+-- **Tap Payments**
+-- **MyFatoorah**
+-- **UPayments**
++Example:
+ 
+-Provider account states:
++| ERPNext Mode of Payment | Channel | Provider Account |
++| --- | --- | --- |
++| Cash | Cash | — |
++| Cheque | Manual / Non-Cash | — |
++| Bank Transfer | Manual / Non-Cash | — |
++| Tap Payment | Electronic Payment | Tap account |
++| MyFatoorah | Electronic Payment | MyFatoorah account |
++| UPayment | Electronic Payment | UPayments account |
++| TAP Terminal | Physical Payment Terminal | terminal/provider mapping |
+ 
+-- `Test`
+-- `Active`
+-- `Refund Only`
+-- `Disabled`
++## Supported hosted providers
+ 
+-A provider can therefore be disabled for new sales while remaining available for refunds of historical transactions.
++Included adapters:
+ 
+-### Physical terminal note
++- Tap Payments
++- MyFatoorah
++- UPayments
+ 
+-Payment Hub includes routing and terminal mapping support, but **physical SmartPOS / ECR charging requires a real provider-specific terminal API implementation**.
++Provider account states include:
+ 
+-The included hosted-payment adapters do not invent or emulate a terminal protocol.
++- Test
++- Active
++- Refund Only
++- Disabled
+ 
+----
++`Refund Only` allows historical transactions to be refunded without allowing new sales through that account.
+ 
+-## POSNext Integration
++> Physical SmartPOS/ECR charging still requires a real provider-specific terminal implementation. Hosted checkout adapters must not be treated as terminal protocols.
+ 
+-v0.6.13 includes a dedicated POSNext integration for **POSNext v2.0.0 / `e0a52c5`**.
++## POSNext integration
+ 
+-The integration provides:
++The v0.6.14 integration targets **POSNext v2.0.0 / `e0a52c5`** and includes:
+ 
+-- Payment Hub **Waiting / Paid / Failed** queues
++- Payment Hub Waiting / Paid / Failed queues
++- Copy Link on queue records with a stored payment URL
+ - Current Shift → Last Shift → Today scope fallback
+-- overnight shift / business-date handling
++- overnight shift/business-date handling
+ - configurable pending-sale recovery
+-- recovery visibility across shift changes
++- recovery across shift closure
+ - POS Profile isolation for normal cashiers
+-- All POS Profiles access for permitted manager/admin roles
+-- original cashier and original shift visibility
+-- **Previous Shift** indication
+-- Receipt / Thermal draft printing
+-- A4 draft printing
++- broader manager/admin visibility when authorized
++- original cashier/original shift display
++- Previous Shift indicator
++- Receipt/Thermal and A4 draft printing
+ - configurable print formats
+ - asynchronous electronic payment
+-- WhatsApp payment-link delivery
+-- transaction history
+-- daily transaction reports
+-- Payment Hub-managed return/refund handling
+-- backend invoice ownership and refund protection
++- WhatsApp payment-link delivery/status
++- split tender
++- transaction history and daily reports
++- return/refund workflow
++- Check Refund / Retry Refund / Complete Return
++- backend invoice ownership/refund protection
++- POS draft cleanup protection for recoverable Payment Hub sessions
+ 
+-### POSNext patch files
++### POSNext patch choices
+ 
+-For a **clean POSNext v2.0.0 / `e0a52c5` checkout**:
++For a **clean POSNext v2.0.0 / `e0a52c5` checkout**, use:
+ 
+ ```text
+-integrations/pos_next/pos_next_payment_hub_v0.6.13_posnext_v2.0.0_e0a52c5.patch
++integrations/pos_next/pos_next_payment_hub_v0.6.14_posnext_v2.0.0_e0a52c5.patch
+ ```
+ 
+-For POSNext that already has the **live v0.6.12 Payment Hub adapter**:
++For an existing **v0.6.13 Payment Hub POS integration without Copy Link**, use:
+ 
+ ```text
+-integrations/pos_next/pos_next_payment_hub_v0.6.13_from_v0.6.12_live.patch
++integrations/pos_next/pos_next_payment_hub_v0.6.14_from_v0.6.13_live.patch
+ ```
+ 
+-**Do not apply both patches.**
+-
+-Always run `git apply --check` before applying a patch.
++If your current `PaymentHubPendingDialog.vue` already contains both `Copy Link` and `copyPaymentLink`, skip the incremental POS patch.
+ 
+----
++**Never apply both POS patches. Always run `git apply --check` first.**
+ 
+-## POS Payment Session Model
++## Payment data model
+ 
+-Payment Hub separates the **sale session** from individual payment attempts.
++### POS Payment Session (PPS)
+ 
+-### POS Payment Session — PPS
++One logical POS sale. It stores the customer, POS Profile, original opening shift, business date, totals, recovery deadline, draft payload, linked invoice and completion state.
+ 
+-One Payment Hub sale.
++### POS Payment Allocation (PPA)
+ 
+-Stores information such as:
++One payment allocation/attempt inside a PPS. A PPS may have multiple PPAs, including multiple electronic attempts after abandonment/failure/expiry.
+ 
+-- customer
+-- POS Profile
+-- original POS opening shift
+-- business date
+-- currency
+-- grand total
+-- confirmed paid amount
+-- pending amount
+-- remaining amount
+-- draft payload
+-- recovery deadline
+-- linked invoice
+-- completion state
++### Gateway Transaction (PGT)
+ 
+-### POS Payment Allocation — PPA
++Provider-facing audit record containing provider IDs, payment URL, local/provider status, response data and payment/refund metadata.
+ 
+-One payment allocation/attempt inside the sale.
++## Split tender and change
+ 
+-Examples:
+-
+-- cash allocation
+-- manual/non-cash allocation
+-- Tap payment link
+-- MyFatoorah payment link
+-- physical terminal payment
+-
+-A single PPS can contain multiple PPAs.
+-
+-### Gateway Transaction — PGT
+-
+-Provider-facing gateway audit record.
+-
+-Stores provider references, status, response data, payment URL, captured/refunded state, and related payment metadata.
+-
+----
+-
+-## Split Tender and Cash Change
+-
+-Payment Hub supports mixed payment methods in one POS sale.
+-
+-Example:
++Payment Hub supports mixed payment methods in one sale.
+ 
+ ```text
+-Sale total:             KWD 5.000
+-
+-Tap Payment:            KWD 1.000
+-TAP Terminal:           KWD 1.000
+-Bank Transfer:          KWD 1.000
+-Cash tendered:          KWD 5.000
+-
+-Cash applied:           KWD 2.000
+-Change:                 KWD 3.000
++Sale total:       KWD 5.000
++Electronic:       KWD 1.000
++Terminal:         KWD 1.000
++Bank Transfer:    KWD 1.000
++Cash tendered:    KWD 5.000
++Cash applied:     KWD 2.000
++Change:           KWD 3.000
+ ```
+ 
+ Rules:
+ 
+-- non-cash methods may be partial
+-- combined non-cash payment may not exceed the sale total
+-- non-cash methods never generate change
+-- **Cash is the only tender allowed to exceed the remaining balance**
+-- only the cash amount actually applied to the invoice is posted to the invoice
+-- excess cash is retained as `Change Amount`
+-- the session records cash tendered and change separately
++- non-cash allocations may be partial
++- non-cash cannot exceed the remaining invoice balance
++- non-cash never creates change
++- cash is the only tender that may exceed the remaining balance
++- only the cash actually applied is posted to the invoice
++- excess cash is recorded as change
+ 
+-POSNext's built-in **Customer Credit** is an accounting feature and should not be treated as a captured manual payment unless it is represented as a normal ERPNext Mode of Payment.
++ERPNext/POSNext Customer Credit is an accounting feature and is not treated as a captured manual payment unless represented by an actual Mode of Payment mapping.
+ 
+----
++## Payment links and recovery
+ 
+-## Payment Links and Recovery
++Payment Hub intentionally separates **sale recovery lifetime** from **provider payment-link lifetime**.
+ 
+-Payment Hub deliberately separates:
+-
+-1. **POS sale recovery lifetime**
+-2. **individual provider payment-link lifetime**
+-
+-These are not the same thing.
+-
+-### Pending sale recovery
++### Pending sale retention
+ 
+ Configure:
+ 
+ ```text
+-Payment Hub Settings
+-→ Pending Sale Retention (Hours)
++Payment Hub Settings → Pending Sale Retention (Hours)
+ ```
+ 
+-Default:
++Recommended/default new-install value:
+ 
+ ```text
+-24 hours
++24
+ ```
+ 
+-This controls how long an incomplete Payment Hub POS sale may remain recoverable.
+-
+-### Payment-link lifetime
+-
+-Configure the global fallback:
+-
+-```text
+-Payment Hub Settings
+-→ Fallback Payment Link Lifetime (Minutes)
+-```
+-
+-Default for new installs:
+-
+-```text
+-1440 minutes
+-```
++This controls how long an incomplete sale stays recoverable. Captured money is never auto-expired by this recovery timer.
+ 
+-A **Payment Provider Account** may override the fallback.
++### Payment-link expiry priority
+ 
+-Expiry priority is:
++Expiry resolution is:
+ 
+ ```text
+-Provider-reported expiry
++provider-reported expiry
++        ↓
++Payment Provider Account fallback (if > 0)
+         ↓
+-Provider Account fallback
++Payment Hub Settings fallback (if > 0)
+         ↓
+-Payment Hub Settings fallback
++no synthetic expiry; rely on provider-native behavior
+ ```
+ 
+-If Tap returns its own `transaction.expiry`, that provider value is authoritative for that attempt.
+-
+-### Resend safety
++`Fallback Payment Link Lifetime (Minutes)` is optional. Leave it blank/0 when you want provider-native behavior and the provider already controls expiry.
+ 
+-Before resending a previously sent electronic payment link, Payment Hub refreshes provider status.
++### Retry safety
+ 
+-A final or captured attempt is not supposed to be blindly resent.
++Before resending or replacing a payment attempt, Payment Hub refreshes provider state where applicable. Final/captured attempts are not blindly reused.
+ 
+-Examples of final states include:
++A new link creates a new PPA while preserving the original PPS for audit continuity.
+ 
+-- Captured
+-- Failed
+-- Abandoned
+-- Cancelled
+-- Expired
++## Cross-shift recovery
+ 
+-A retry creates a new payment attempt while keeping the original PPS sale session for audit continuity.
++A pending PPS can survive shift closure.
+ 
+----
++- The old closed shift is not reopened or modified.
++- Original shift and business date remain in audit history.
++- If payment captures and a compatible current shift is open, the sale can be completed under the current shift while preserving origin data.
++- If no shift is open, the session remains/enters **Ready to Complete** until a cashier opens the required shift.
++- Captured funds are not discarded because the original recovery window ended.
+ 
+-## WhatsApp Payment Links
++## WhatsApp payment links
+ 
+-Electronic payment links can be sent through WhatsApp.
++Payment Hub can send hosted payment links through the connected `frappe_whatsapp` app.
+ 
+-Supported configuration fields include:
++Typical configuration:
+ 
+ - WhatsApp Integration
+ - WhatsApp Account
+ - Payment Link WhatsApp Template
+ - Custom WhatsApp Sender Method
+ - Payment Link Message Template
+-- Save Electronic Payment and Serve Next Customer
+-- After Electronic Payment Capture
+ 
+-Default message template:
++A WhatsApp `wamid...` means Meta accepted the API request; it does **not** by itself prove delivery. Final webhook status may become `sent`, `delivered`, `read` or `failed`.
++
++### Meta billing failure example
++
++If webhook logs show:
+ 
+ ```text
+-Payment request {session}
+-Amount: {currency} {amount}
+-Please complete your payment using the secure link below:
+-{payment_url}
++131042 - Business eligibility payment issue
++Message failed to send because your WhatsApp Business account has unsettled payments.
+ ```
+ 
+-The electronic-payment flow can be asynchronous so the cashier may serve the next customer while the payment remains in the Payment Hub Waiting queue.
+-
+----
++resolve the outstanding balance/payment method in Meta Business billing, then send a new message. This is a WhatsApp Business billing issue, not a Payment Hub payment failure.
+ 
+ ## Printing
+ 
+-Payment Hub supports configurable POS draft/final print formats.
+-
+-Available settings include:
++Configurable fields include:
+ 
+ - Default POS Print Format
+ - Draft A4 Print Format
+@@ -317,23 +267,15 @@ Available settings include:
+ - Final Receipt Print Format
+ - Default Draft Print Type
+ 
+-Supported draft-print use cases include:
+-
+-- Receipt / Thermal
+-- A4
+-- Ask Each Time
+-
+----
++Draft options include Receipt/Thermal, A4 and Ask Each Time.
+ 
+-## Refund and Return Security
++## Refunds and returns
+ 
+-Refunds are tied to the **original payment source**.
++Refunds are tied to the original payment source. Payment Hub preserves the original provider/account and applies refund authorization rules before sending provider refunds.
+ 
+-Payment Hub records the provider/account used for the original payment and uses that source for the refund even if the current default provider has changed.
++Supported controls include:
+ 
+-Security controls include:
+-
+-- Force Original Provider for Refund
++- force original provider for refund
+ - partial refunds
+ - manager authorization for electronic refunds
+ - manager authorization for physical-terminal refunds
+@@ -341,254 +283,102 @@ Security controls include:
+ - authorized refund-method override
+ - short-lived refund authorization
+ - audited override flow
+-- server-side Sales Invoice return validation
++- backend Sales Invoice return validation
+ - invoice ownership protection
+-- pending provider refund handling
+-- Check Refund continuation
++- Pending/Processing/Manual Review handling
++- Check Refund
++- Retry Refund only after a definitive provider failure
++- Complete Return only after required refund allocations are completed
+ 
+-Relevant settings:
++v0.6.13+ also stores available provider refund identifiers on `POS Refund Allocation` for reporting and WhatsApp templates.
+ 
+-```text
+-Require Manager Authorization for Cash Refund
+-Require Manager Authorization for Electronic Refund
+-Require Manager Authorization for Physical Terminal Refund
+-Allow Authorized Refund Method Override
+-Refund Authorization Validity (Minutes)
+-```
+-
+----
+-
+-## Transaction History and Reports
++## Reports and reconciliation
+ 
+-Payment Hub includes POS-side history/reporting plus standard ERPNext Desk reports.
+-
+-Included reports:
++Included reports/workflows cover:
+ 
+ - Payment Hub Transaction History
+-- Payment Hub Daily Transactions
+-- Payment Hub Payment Method Summary
+-- Payment Hub Cashier / Branch Summary
+-- Payment Hub Provider Reconciliation
+-- Payment Hub Pending / Failed Transactions
+-- Payment Hub Refund Audit
+-
+-Transaction reporting supports detailed payment/refund rows and export functionality.
+-
+----
++- Daily Transactions
++- Payment Method Summary
++- Cashier / Branch Summary
++- Provider Reconciliation
++- Pending / Failed Transactions
++- Refund Audit
+ 
+-## Scheduler and Reconciliation
+-
+-Payment Hub registers low-rate reconciliation jobs every five minutes for:
+-
+-- pending POS payment reconciliation
+-- stale POS payment expiry
+-- stale POS session expiry
+-
+-Provider webhooks remain the primary notification path; the scheduler provides fallback reconciliation.
+-
+----
++Scheduler reconciliation runs at low frequency as a fallback for provider webhooks and handles pending payment checks and stale-session/link maintenance.
+ 
+ ## Installation
+ 
+-### 1. Install Payment Hub
+-
+-From your bench directory:
++See **[INSTALL_v0.6.14.md](INSTALL_v0.6.14.md)** for both clean installation and upgrade steps.
+ 
+-```bash
+-cd ~/frappe-bench
++### Backend app
+ 
+-bench get-app https://github.com/rohitmunger1989/erpnext_payment_hub.git --branch main
+-
+-bench --site YOUR_SITE install-app erpnext_payment_hub
+-bench --site YOUR_SITE migrate
+-bench --site YOUR_SITE clear-cache
+-bench restart
+-```
+-
+-For an existing checkout:
++After the repository is installed in `apps/erpnext_payment_hub`:
+ 
+ ```bash
+-cd ~/frappe-bench/apps/erpnext_payment_hub
+-git pull origin main
+-
+ cd ~/frappe-bench
+ ./env/bin/pip install -e apps/erpnext_payment_hub
++bench --site YOUR_SITE install-app erpnext_payment_hub   # fresh site only
+ bench --site YOUR_SITE migrate
+ bench --site YOUR_SITE clear-cache
+ bench restart
+ ```
+ 
+-Verify:
+-
+-```bash
+-bench version | grep erpnext_payment_hub
+-```
+-
+-Expected release:
+-
+-```text
+-erpnext_payment_hub 0.6.13
+-```
+-
+-### 2. Integrate POSNext
++For an already-installed site, do not run `install-app` again; use `migrate`, `clear-cache`, and restart after updating source.
+ 
+-Verify the POSNext source first:
++### Verify version
+ 
+ ```bash
+-cd ~/frappe-bench/apps/pos_next
+-
+-git rev-parse --short HEAD
+-git describe --tags --exact-match 2>/dev/null || git describe --tags --always
+-git status --short
++cd ~/frappe-bench
++grep '__version__' apps/erpnext_payment_hub/erpnext_payment_hub/__init__.py
++bench version | grep -E 'erpnext_payment_hub|pos_next'
+ ```
+ 
+-The v0.6.13 consolidated adapter targets:
++Expected Payment Hub source version:
+ 
+ ```text
+-Commit: e0a52c5
+-Tag:    v2.0.0
+-```
+-
+-For a clean v2.0.0 source:
+-
+-```bash
+-git apply --check \
+-  ../erpnext_payment_hub/integrations/pos_next/pos_next_payment_hub_v0.6.13_posnext_v2.0.0_e0a52c5.patch
+-```
+-
+-If the check succeeds:
+-
+-```bash
+-git apply \
+-  ../erpnext_payment_hub/integrations/pos_next/pos_next_payment_hub_v0.6.13_posnext_v2.0.0_e0a52c5.patch
++__version__ = "0.6.14"
+ ```
+ 
+-Build:
++## Configuration checklist
+ 
+-```bash
+-cd ~/frappe-bench/apps/pos_next/POS
++Open these DocTypes:
+ 
+-npm install
+-npm run build
+-npm run copy-html-entry
+-
+-cd ~/frappe-bench
+-bench --site YOUR_SITE clear-cache
+-bench restart
+-```
++1. Payment Hub Settings
++2. Payment Provider Account
++3. Payment Method Mapping / settings mapping table
++4. Payment Terminal
++5. POS Station
++6. POS Payment Session
++7. POS Payment Allocation
++8. Gateway Transaction
+ 
+-Then hard-refresh the browser:
++Recommended recovery defaults:
+ 
+ ```text
+-Ctrl + Shift + R
++Pending Sale Retention (Hours): 24
++Fallback Payment Link Lifetime (Minutes): blank/0 unless needed
++Auto Expire Stale Pending Sales: enabled if you want stale unpaid sessions closed automatically
+ ```
+ 
+----
++Provider-reported expiry always wins over fallback values.
+ 
+-## Configuration
++## Provider setup notes
+ 
+-Open these DocTypes from ERPNext Desk:
++### Tap
+ 
+-1. **Payment Hub Settings**
+-2. **Payment Provider Account**
+-3. **Gateway Transaction**
+-4. **POS Payment Session**
+-5. **POS Payment Allocation**
+-6. **Payment Terminal**
+-7. **POS Station**
+-
+-### Payment Hub Settings
+-
+-Important areas include:
+-
+-#### Provider defaults
+-
+-- Default Provider
+-- Force Original Provider for Refund
+-- Allow Partial Refund
+-- Verify Webhooks with Status API
+-- Auto Reconcile
+-
+-#### Payment Method Mappings
+-
+-Map the ERPNext Mode of Payment to:
+-
+-- Cash
+-- Manual / Non-Cash
+-- Electronic Payment
+-- Physical Payment Terminal
+-
+-Mappings can optionally be scoped by:
+-
+-- Company
+-- POS Profile
+-
+-#### Payment recovery / WhatsApp / printing
+-
+-Payment/recovery/WhatsApp/printing settings include:
+-
+-- Fallback Payment Link Lifetime (Minutes)
+-- Pending Sale Retention (Hours)
+-- Auto Expire Stale Pending Sales
+-- Default POS Print Format
+-- Draft A4 Print Format
+-- Draft Receipt Print Format
+-- Final Receipt Print Format
+-- Default Draft Print Type
+-- WhatsApp Integration
+-- WhatsApp Account
+-- Payment Link WhatsApp Template
+-- Custom WhatsApp Sender Method
+-- Payment Link Message Template
+-- Save Electronic Payment and Serve Next Customer
+-- After Electronic Payment Capture
+-
+-The section label is historical; these fields remain active configuration values.
+-
+----
+-
+-## Provider Configuration
+-
+-The installer can create disabled provider accounts for supported providers.
+-
+-Configure a Payment Provider Account with the credentials supplied by the provider and set an appropriate state.
+-
+-### Tap Payments
+-
+-Typical fields:
+-
+-- Secret Key
+-- Merchant ID
+-- Test Mode
+-- Status
+-- optional Base URL Override
+-- optional Fallback Payment Link Lifetime
++Configure Secret Key, Merchant ID, Test Mode/Status, and any account-specific fallback expiry. Tap's returned expiry is authoritative when present.
+ 
+ ### MyFatoorah
+ 
+-Typical fields:
+-
+-- API Key / Token
+-- Test Mode
+-- Status
+-- optional Base URL Override
++Configure the API token/key, Test Mode/Status and Base URL if required by the merchant environment.
+ 
+ ### UPayments
+ 
+-Typical fields:
+-
+-- API Key / Token
+-- Test Mode
+-- Status
+-- optional Base URL Override
+-
+-Use the provider's confirmed production API base when moving from sandbox to live mode.
+-
+----
++Configure API key/token, Test Mode/Status and Base URL. v0.6.14 uses the PPA payment attempt as the merchant-side attempt reference for new POS links.
+ 
+-## API Examples
++## API examples
+ 
+-### Create payment
++### Create a payment
+ 
+ ```python
+ from erpnext_payment_hub.api import create_payment
+@@ -600,11 +390,9 @@ result = create_payment(
+     payment_method="KNET",
+     currency="KWD",
+ )
+-
+-print(result)
+ ```
+ 
+-### Refresh transaction
++### Refresh a Gateway Transaction
+ 
+ ```python
+ from erpnext_payment_hub.api import refresh_transaction
+@@ -612,7 +400,7 @@ from erpnext_payment_hub.api import refresh_transaction
+ refresh_transaction("PGT-2026-00001")
+ ```
+ 
+-### Refund captured transaction
++### Refund a captured transaction
+ 
+ ```python
+ from erpnext_payment_hub.api import refund_transaction
+@@ -624,146 +412,37 @@ refund_transaction(
+ )
+ ```
+ 
+-The refund uses the provider/account stored against the original transaction.
+-
+----
+-
+-## Tests
++## Test checklist before tagging/releasing
+ 
+-Run the app test suite:
+-
+-```bash
+-bench --site YOUR_SITE run-tests --app erpnext_payment_hub
+-```
++At minimum test:
+ 
+-Before production use, test:
+-
+-- provider sandbox payment creation
+-- success / failure / abandonment paths
+-- webhook/status reconciliation
++- Cash sale
++- Manual / Non-Cash sale
++- Tap payment link
++- MyFatoorah payment link
++- UPayments payment link
++- UPayments failed/expired attempt → Create New Link without duplicate merchant Track ID
++- Copy Link in Waiting / Paid / Failed when a URL exists
+ - split tender
+-- payment-link expiry
+-- retry behavior
+-- partial and full refunds
+-- manager refund authorization
+-- receipt and A4 printing
+-- shift changes
+-- POS Profile access rules
+-
+----
+-
+-## Current v0.6.13 Notes
+-
+-The v0.6.8 issues around stale deleted draft invoices, Payment-Hub-unaware one-hour POSNext cleanup, expired-but-still-INITIATED payment links, and cross-shift captured-payment recovery were addressed by the v0.6.9/v0.6.11 maintenance line.
+-
+-Refund safety in v0.6.13 is intentionally fail-closed:
+-
+-- `Completed` -> refund confirmed
+-- `Failed` -> retry is allowed and creates/reuses a safe replacement attempt while preserving the old failed Gateway Transaction
+-- `Pending` / `Processing` -> use **Check Refund**
+-- `Manual Review` -> use **Check Refund** and verify the provider; no automatic duplicate refund is sent
+-
+-Physical SmartPOS/ECR charging still requires a provider-specific terminal adapter and merchant terminal API specification. Hosted-payment adapters must not be assumed to control a physical terminal.
+-
+----
+-
+-## v0.6.13 Release Notes
+-
+-### Refund actions in Invoice Details
+-
+-Payment Hub-managed return invoices now show **Check Refund**, **Retry Refund**, and **Complete Return** when applicable. The refund card exposes local/provider status, attempt count, refund Gateway Transaction, and available provider identifiers.
+-
+-### Safe failed-refund retry
+-
+-A retry is available only for a definitively `Failed` refund. Before creating a replacement attempt, Payment Hub re-checks the old provider refund when the provider supports refund-status lookup. The original manager authorization remains bound to the same return/source/amount and the failed Gateway Transaction stays in history.
+-
+-### Provider refund audit fields
+-
+-`POS Refund Allocation` stores provider refund ID, reference/ARN, auth number, refund provider transaction ID, and original provider transaction/payment IDs when supplied by the provider. These fields are available to Frappe WhatsApp templates.
+-
+-### WhatsApp completion rule
+-
+-Refund confirmation is sent only when the refund reaches `Completed`. Pending/Processing/Failed/Manual Review states do not consume the final confirmation marker.
+-
+----
+-
+-## v0.6.12 Release Notes
+-
+-v0.6.12 introduced failed-refund retry foundations and refund WhatsApp configuration while keeping uncertain external results in `Manual Review` instead of blindly repeating the provider request.
+-
+----
+-
+-## v0.6.11 Release Notes
+-
+-v0.6.11 added the customer-friendly hosted payment status page, closed-session Create New Link protection, optional blank/0 fallback payment-link lifetime behavior, and retained the v0.6.9 recovery fixes.
+-
+----
+-
+-## v0.6.8 Release Notes
+-
+-### Provider-aware payment-link expiry
+-
+-v0.6.8 separates Payment Hub recovery time from individual provider checkout lifetime.
+-
+-- configurable Payment Hub fallback expiry
+-- optional provider-account fallback expiry
+-- provider-returned expiry takes priority
+-- Tap `transaction.expiry` is read automatically
+-- resend performs a provider status refresh first
+-- final/captured attempts are not blindly resent
+-
+-### Manual / Non-Cash channel
+-
+-Adds `Manual / Non-Cash` for accepted non-gateway methods such as:
+-
+-- Cheque
+-- Bank Transfer
+-- other normal ERPNext non-cash Modes of Payment
+-
+-Manual/non-cash allocations cannot create change.
+-
+-### Payment-attempt auditability
+-
+-Tap retry attempts use the **POS Payment Allocation** as the provider transaction/order reference while retaining the parent **POS Payment Session** in metadata.
+-
+-### v0.6.7 foundations retained
+-
+-v0.6.8 retains:
+-
+-- global and POS Profile-specific mappings
+-- custom electronic Mode of Payment names
+-- multi-provider split tender
+-- cash tender/applied/change separation
+-- cash-only overpayment/change rule
+-
+----
+-
+-## Security Notes
+-
+-- API keys and secrets belong in Payment Provider Account password fields.
+-- Do not expose provider secrets in frontend code.
+-- Verify provider payment status server-to-server.
+-- Keep refund authorization enabled for electronic/terminal refunds.
+-- Test all provider behavior in sandbox before production.
+-- Use HTTPS for the ERPNext site and webhook endpoints.
+-- Keep provider refund/reconciliation records for audit.
+-- Do not assume a browser redirect alone proves that a payment was captured.
+-
+----
++- provider success / failure / abandonment / expiry
++- stale/deleted draft recovery
++- shift close while payment is pending
++- capture after old shift closes
++- WhatsApp `sent/delivered/read/failed` states
++- receipt/A4 printing
++- completed refund
++- Pending/Manual Review → Check Refund
++- failed refund → Retry Refund
++- Complete Return only after required refunds complete
++- refund WhatsApp only after Completed
++- POS Profile isolation
++- reports/reconciliation
++
++Do not move the permanent `v0.6.8` rollback tag. Create/push the `v0.6.14` tag only after live testing passes.
+ 
+ ## Repository
+ 
+-GitHub:
+-
+-https://github.com/rohitmunger1989/erpnext_payment_hub
+-
+-Release:
+-
+-```text
+-v0.6.13
+-```
+-
+----
++GitHub: `https://github.com/rohitmunger1989/erpnext_payment_hub`
+ 
+ ## License
+ 
+diff --git a/RELEASE_NOTES_v0.6.14.md b/RELEASE_NOTES_v0.6.14.md
+new file mode 100644
+index 0000000000000000000000000000000000000000..4a6ff3afee87daf2e3846fd16b92117e23cbb5c6
+--- /dev/null
++++ b/RELEASE_NOTES_v0.6.14.md
+@@ -0,0 +1,30 @@
++# v0.6.14 Release Notes
++
++v0.6.14 is a consolidation release built on v0.6.13.
++
++## Included changes
++
++1. **Copy Link queue action** — Waiting/Paid/Failed cards can copy the stored payment URL.
++2. **Queue API fix** — `get_sales_queue()` now returns `payment_url` from the latest electronic PPA or PGT.
++3. **UPayments/KNET duplicate reference fix** — new payment attempts use the PPA as the unique merchant attempt reference.
++4. **WhatsApp wording** — queue text says `WhatsApp attempt N` and shows the webhook status separately.
++5. **Packaging correction** — the clean POSNext v2.0.0 consolidated patch now includes the complete `PaymentHubPendingDialog.vue` file.
++6. **Documentation refresh** — README, install guide, changelog and POSNext integration documentation now describe the actual current release.
++
++## No intentional change to
++
++- refund authorization/security model
++- provider refund source locking
++- print-format selection
++- mapping priority
++- reports
++- permissions
++- recovery-window rules
++- provider-reported expiry priority
++- captured-payment safety
++
++## Important test focus
++
++UPayments retries and new links should no longer reuse the PPS merchant reference. Confirm that separate attempts show separate `PPA-...` references provider-side.
++
++A copied failed/expired URL remains historical; copying does not reactivate it.
+diff --git a/erpnext_payment_hub/__init__.py b/erpnext_payment_hub/__init__.py
+index c98d6e334acc6476cde4b218b4fbbd9a4c4662df..2e77e10734567f8a7e24a32a0b8003e57faecf23 100644
+--- a/erpnext_payment_hub/__init__.py
++++ b/erpnext_payment_hub/__init__.py
+@@ -1 +1 @@
+-__version__ = "0.6.13"
++__version__ = "0.6.14"
+diff --git a/integrations/pos_next/README.md b/integrations/pos_next/README.md
+index 8499ecdc43bca8d0cd696220c347b2f4e942ac8b..c547253a9bcb1c75f8bcc24c9429cc0d6f089933 100644
+--- a/integrations/pos_next/README.md
++++ b/integrations/pos_next/README.md
+@@ -1,50 +1,40 @@
+-# POSNext integration compatibility
++# POSNext Integration — Payment Hub v0.6.14
+ 
+-ERPNext Payment Hub v0.6.6 supports POSNext v2.0.0 / `e0a52c5` with mapping-aware payment routing.
++Target: **POSNext v2.0.0 / commit `e0a52c5`**.
+ 
+-## Current POSNext v2.0.0 — e0a52c5
++## Clean POSNext checkout
+ 
+-For a **clean** POSNext v2.0.0 checkout, use:
++Use:
+ 
+-`pos_next_payment_hub_v0.6.6_posnext_v2.0.0_e0a52c5.patch`
+-
+-For a POSNext checkout that already has the Payment Hub **v0.6.5** adapter applied, use the smaller incremental patch:
+-
+-`pos_next_payment_hub_v0.6.6_from_v0.6.5.patch`
++```text
++pos_next_payment_hub_v0.6.14_posnext_v2.0.0_e0a52c5.patch
++```
+ 
+-Do not apply both. Always run `git apply --check` first.
++This is the complete integration patch and includes the new `POS/src/components/sale/PaymentHubPendingDialog.vue` file.
+ 
+-### v0.6.6 routing behavior
++## Existing v0.6.13 Payment Hub adapter
+ 
+-The adapter reads `payment_method_mappings` from `erpnext_payment_hub.pos.api.get_pos_payment_config`. This means any ERPNext Mode of Payment name can be mapped to an internal Payment Hub channel:
++Use:
+ 
+-- `Tap Payment` → Electronic Payment → Tap provider account
+-- `UPayment` → Electronic Payment → UPayments provider account
+-- `TAP Terminal` → Physical Payment Terminal → Tap terminal/provider mapping
+-- `UPay Terminal` → Physical Payment Terminal → UPayments terminal/provider mapping
+-- custom Cash modes → Cash
++```text
++pos_next_payment_hub_v0.6.14_from_v0.6.13_live.patch
++```
+ 
+-Electronic and physical-terminal mappings are resolved by the backend; the visible ERPNext Mode of Payment name is never used as a provider-name guess.
++This incremental patch adds the Copy Link UI/function and changes the Waiting queue text from `WhatsApp sent N time(s)` to `WhatsApp attempt N`.
+ 
+-> Physical-terminal charging requires the selected provider class to implement its SmartPOS/ECR `create_terminal_payment` adapter. The routing/mapping is included in v0.6.6, but provider-specific terminal protocols still require the merchant/provider terminal API specification.
++If your live file already contains `Copy Link` and `copyPaymentLink`, do not re-apply the same hunk blindly. Compare first.
+ 
+-### Expected source check
++## Pre-check
+ 
+ ```bash
+ cd ~/frappe-bench/apps/pos_next
+-git status --short
+-git rev-parse --short HEAD
+-git describe --tags --always
++git apply --check PATH_TO_PATCH
++echo "CHECK=$?"
+ ```
+ 
+-Clean v2.0.0 expected base:
+-
+-```text
+-e0a52c5
+-v2.0.0
+-```
++Apply only when the check is `0`.
+ 
+-### Build after applying
++## Build
+ 
+ ```bash
+ cd ~/frappe-bench/apps/pos_next/POS
+@@ -56,34 +46,15 @@ bench --site erp.bm-kw.com clear-cache
+ bench restart
+ ```
+ 
+-## Legacy POSNext — fbf8e80
+-
+-`pos_next_payment_hub_legacy_v0.6.4_fbf8e80.patch` is retained only for the older source base. Never apply it to v2.0.0.
+-
+-## v0.6.7 adapters
+-
+-For POSNext v2.0.0 (`e0a52c5`), v0.6.7 adds multi-provider split tender, custom mapped Electronic Payment link behavior, and cash-only overpayment/change handling.
+-
+-- Clean v2.0.0 checkout: `pos_next_payment_hub_v0.6.7_posnext_v2.0.0_e0a52c5.patch`
+-- Existing Payment Hub v0.6.6 POSNext adapter: `pos_next_payment_hub_v0.6.7_from_v0.6.6.patch`
+-
+-Do not apply both patches.
+-
+-## v0.6.8 adapter
+-
+-The v0.6.8 POSNext incremental adapter adds `Manual / Non-Cash` mapping awareness so cheque/bank Modes of Payment can participate safely in a mixed Payment Hub checkout together with electronic links or physical terminals. Cash remains the only tender allowed to generate change.
+-
+-Files:
+-- Existing Payment Hub v0.6.7 POSNext adapter: `pos_next_payment_hub_v0.6.8_from_v0.6.7.patch`
+-- Clean POSNext v2.0.0 (`e0a52c5`): `pos_next_payment_hub_v0.6.8_posnext_v2.0.0_e0a52c5.patch`
+-
+-## v0.6.13 refund actions
++Hard refresh POS with `Ctrl + Shift + R`.
+ 
+-Current target: POSNext v2.0.0 / `e0a52c5`.
++## v0.6.14 UI behavior
+ 
+-- Existing live Payment Hub v0.6.12 adapter: `pos_next_payment_hub_v0.6.13_from_v0.6.12_live.patch`
+-- Clean POSNext v2.0.0 / `e0a52c5`: `pos_next_payment_hub_v0.6.13_posnext_v2.0.0_e0a52c5.patch`
++- Waiting/Paid/Failed rows show **Copy Link** when `row.payment_url` exists.
++- Copying a failed/expired historical URL does not make it valid again.
++- Waiting queue shows the WhatsApp attempt count, timestamp and latest stored WhatsApp status.
++- Check Status / Create New Link / Complete & Print continue to follow backend state flags.
+ 
+-v0.6.13 adds refund status/actions to `InvoiceDetailDialog.vue`: **Check Refund**, **Retry Refund**, and **Complete Return**. It also displays the refund Gateway Transaction, provider/local status, attempt count, and provider refund identifiers returned by the Payment Hub backend.
++## Older patches
+ 
+-The incremental patch changes only `POS/src/components/invoices/InvoiceDetailDialog.vue`. Do not apply both the incremental and consolidated patches. Always run `git apply --check` first.
++Older integration patches are retained for history/rollback only. Do not stack multiple consolidated patches on the same POSNext checkout.

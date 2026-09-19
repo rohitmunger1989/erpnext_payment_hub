@@ -22,6 +22,13 @@
     "refund_gateway_transaction",
     "status",
     "provider_status",
+    "provider_audit_section",
+    "provider_refund_id",
+    "provider_reference",
+    "provider_auth_no",
+    "refund_provider_transaction_id",
+    "source_provider_transaction_id",
+    "source_provider_payment_id",
     "actual_refund_section",
     "actual_refund_channel",
     "actual_refund_mode_of_payment",
@@ -30,6 +37,10 @@
     "authorized_by",
     "initiated_by",
     "completed_at",
+    "refund_whatsapp_section",
+    "refund_whatsapp_sent_at",
+    "refund_whatsapp_message",
+    "refund_whatsapp_error",
     "override_reason",
     "tracking_section",
     "idempotency_key",
@@ -149,6 +160,48 @@
       "read_only": 1
     },
     {
+      "fieldname": "provider_audit_section",
+      "label": "Provider Refund Audit",
+      "fieldtype": "Section Break",
+      "collapsible": 1
+    },
+    {
+      "fieldname": "provider_refund_id",
+      "label": "Provider Refund ID",
+      "fieldtype": "Data",
+      "read_only": 1
+    },
+    {
+      "fieldname": "provider_reference",
+      "label": "Provider Reference / ARN",
+      "fieldtype": "Data",
+      "read_only": 1
+    },
+    {
+      "fieldname": "provider_auth_no",
+      "label": "Provider Auth No.",
+      "fieldtype": "Data",
+      "read_only": 1
+    },
+    {
+      "fieldname": "refund_provider_transaction_id",
+      "label": "Refund Provider Transaction ID",
+      "fieldtype": "Data",
+      "read_only": 1
+    },
+    {
+      "fieldname": "source_provider_transaction_id",
+      "label": "Original Provider Transaction ID",
+      "fieldtype": "Data",
+      "read_only": 1
+    },
+    {
+      "fieldname": "source_provider_payment_id",
+      "label": "Original Provider Payment ID",
+      "fieldtype": "Data",
+      "read_only": 1
+    },
+    {
       "fieldname": "tracking_section",
       "label": "Tracking",
       "fieldtype": "Section Break"
@@ -222,6 +275,30 @@
       "fieldname": "completed_at",
       "label": "Refund Completed At",
       "fieldtype": "Datetime",
+      "read_only": 1
+    },
+    {
+      "fieldname": "refund_whatsapp_section",
+      "label": "Refund WhatsApp",
+      "fieldtype": "Section Break",
+      "collapsible": 1
+    },
+    {
+      "fieldname": "refund_whatsapp_sent_at",
+      "label": "Refund WhatsApp Sent At",
+      "fieldtype": "Datetime",
+      "read_only": 1
+    },
+    {
+      "fieldname": "refund_whatsapp_message",
+      "label": "Refund WhatsApp Message",
+      "fieldtype": "Data",
+      "read_only": 1
+    },
+    {
+      "fieldname": "refund_whatsapp_error",
+      "label": "Refund WhatsApp Error",
+      "fieldtype": "Small Text",
       "read_only": 1
     },
     {

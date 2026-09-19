@@ -142,7 +142,7 @@ class TapProvider(BaseProvider):
             "raw": result,
         }
 
-    def refund(self, transaction, amount, reason=None):
+    def refund(self, transaction, amount, reason=None, retry_key=None):
         if not transaction.provider_transaction_id:
             raise ProviderError("Original Tap charge ID is missing.")
 
@@ -164,13 +164,33 @@ class TapProvider(BaseProvider):
             "metadata": {
                 "erpnext_transaction": transaction.name,
                 "refund_note": reason or "",
+                "refund_retry": int(retry_key or 0),
             },
             "post": {"url": webhook_url},
         }
 
         result = self.request("POST", f"{self.base_url()}/refunds/", json_data=payload)
+        reference = result.get("reference") or {}
         return {
             "provider_refund_id": result.get("id"),
+            "provider_payment_id": reference.get("payment"),
+            "provider_tracking_id": reference.get("gateway") or reference.get("acquirer"),
+            "status": result.get("status") or "PENDING",
+            "raw": result,
+        }
+
+    def get_refund_status(self, transaction):
+        if not transaction.provider_refund_id:
+            raise ProviderError("Tap refund ID is missing.")
+        result = self.request(
+            "GET",
+            f"{self.base_url()}/refunds/{transaction.provider_refund_id}",
+        )
+        reference = result.get("reference") or {}
+        return {
+            "provider_refund_id": result.get("id") or transaction.provider_refund_id,
+            "provider_payment_id": reference.get("payment"),
+            "provider_tracking_id": reference.get("gateway") or reference.get("acquirer"),
             "status": result.get("status") or "PENDING",
             "raw": result,
         }

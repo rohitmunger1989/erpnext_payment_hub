@@ -254,6 +254,13 @@ def update_transaction_from_status(doc, normalized):
 
     if doc.transaction_type == "Refund":
         try:
+            recalculate_original_refunded_amount(doc.original_transaction)
+        except Exception:
+            frappe.log_error(
+                title=f"Payment Hub refund reservation sync failed: {doc.name}",
+                message=frappe.get_traceback(),
+            )
+        try:
             from erpnext_payment_hub.pos.refund import sync_refund_allocation_from_gateway
             sync_refund_allocation_from_gateway(doc)
         except Exception:
@@ -264,6 +271,37 @@ def update_transaction_from_status(doc, normalized):
     return doc
 
 
+
+
+def recalculate_original_refunded_amount(original_transaction):
+    """Rebuild the reserved/refunded total from non-failed refund attempts.
+
+    Failed provider refund attempts must release their reservation so a later
+    deliberate retry can use the remaining refundable balance. Pending or
+    completed attempts stay reserved to prevent duplicate refunds.
+    """
+    if not original_transaction or not frappe.db.exists("Gateway Transaction", original_transaction):
+        return 0.0
+
+    total = frappe.db.sql(
+        """
+        SELECT COALESCE(SUM(amount), 0)
+        FROM `tabGateway Transaction`
+        WHERE transaction_type='Refund'
+          AND original_transaction=%s
+          AND status!='Failed'
+        """,
+        (original_transaction,),
+    )[0][0]
+    total = flt(total or 0, 3)
+    frappe.db.set_value(
+        "Gateway Transaction",
+        original_transaction,
+        "refunded_amount",
+        total,
+        update_modified=False,
+    )
+    return total
 
 def resolve_payment_terminal(
     *,

@@ -1931,6 +1931,10 @@ def get_sales_queue(
         row["provider_message"] = gateway_state.provider_message
         row["provider_transaction_id"] = gateway_row.provider_transaction_id if gateway_row else None
         row["provider_order_id"] = gateway_row.provider_order_id if gateway_row else None
+        row["payment_url"] = (
+            (allocation.payment_url if allocation else None)
+            or (gateway_row.payment_url if gateway_row else None)
+        )
         row["provider"] = allocation.provider if allocation else None
         row["actual_payment_method"] = allocation.actual_payment_method if allocation else None
         row["can_resend_link"] = bool(link_flags.can_resend_link)

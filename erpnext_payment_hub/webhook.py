@@ -133,8 +133,26 @@ def upayments(provider_account=None):
 
 @frappe.whitelist(allow_guest=True)
 def tap_refund(provider_account=None):
-    # Phase 1 stores refund webhooks for follow-up implementation.
-    return {"ok": True}
+    payload = _json()
+    refund_id = payload.get("id")
+    if not provider_account or not refund_id:
+        return {"ok": False}
+
+    doc = _find_transaction(
+        {
+            "provider_account": provider_account,
+            "provider_refund_id": refund_id,
+            "transaction_type": "Refund",
+        }
+    )
+    if not doc:
+        return {"ok": False, "reason": "refund_transaction_not_found"}
+
+    # Refund webhooks are hints only. Re-query Tap before changing local state.
+    account = get_provider_account(provider_account)
+    normalized = get_provider(account).get_refund_status(doc)
+    update_transaction_from_status(doc, normalized)
+    return {"ok": True, "transaction": doc.name, "status": doc.status}
 
 
 @frappe.whitelist(allow_guest=True)

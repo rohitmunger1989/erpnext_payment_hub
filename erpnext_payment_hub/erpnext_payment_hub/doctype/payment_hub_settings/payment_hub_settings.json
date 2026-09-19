@@ -25,6 +25,9 @@
     "whatsapp_template_name",
     "whatsapp_sender_method",
     "payment_link_message_template",
+    "send_refund_whatsapp",
+    "refund_whatsapp_template_name",
+    "refund_message_template",
     "async_electronic_payment",
     "after_electronic_capture",
     "default_print_format",
@@ -183,6 +186,26 @@
       "label": "Payment Link Message Template",
       "fieldtype": "Small Text",
       "default": "Payment request {session}\nAmount: {currency} {amount}\nPlease complete your payment using the secure link below:\n{payment_url}"
+    },
+    {
+      "fieldname": "send_refund_whatsapp",
+      "label": "Send WhatsApp Refund Confirmation",
+      "fieldtype": "Check",
+      "default": "1",
+      "description": "When enabled, send one WhatsApp refund receipt after a refund request is accepted/pending or completed, when a customer mobile number is available. Failed attempts are not messaged."
+    },
+    {
+      "fieldname": "refund_whatsapp_template_name",
+      "label": "Refund WhatsApp Template",
+      "fieldtype": "Data",
+      "description": "Optional approved frappe_whatsapp template for refund confirmations. Leave blank to send the Refund Message Template as a manual WhatsApp message."
+    },
+    {
+      "fieldname": "refund_message_template",
+      "label": "Refund Message Template",
+      "fieldtype": "Small Text",
+      "description": "Optional refund confirmation text. Supported placeholders: {customer_name}, {amount}, {currency}, {mode_of_payment}, {actual_payment_method}, {provider}, {refund_transaction}, {original_transaction}, {provider_refund_id}, {provider_reference}, {provider_auth_no}, {provider_transaction_id}, {provider_payment_id}, {original_invoice}, {return_invoice}, {status}.",
+      "default": "Refund Receipt\nStatus: {status}\nAmount: {currency} {amount}\nMode of Payment: {mode_of_payment}\nPayment Method: {actual_payment_method}\nProvider: {provider}\nRefund Transaction: {refund_transaction}\nProvider Payment Transaction: {provider_transaction_id}\nProvider Payment ID: {provider_payment_id}\nProvider Refund ID: {provider_refund_id}\nProvider Reference / ARN: {provider_reference}\nProvider Auth No: {provider_auth_no}\nOriginal Invoice: {original_invoice}\nReturn Invoice: {return_invoice}\nPlease keep these details for your records."
     },
     {
       "fieldname": "default_print_format",

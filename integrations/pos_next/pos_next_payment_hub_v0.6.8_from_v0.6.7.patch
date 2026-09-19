@@ -1,0 +1,24 @@
+diff --git a/POS/src/pages/POSSale.vue b/POS/src/pages/POSSale.vue
+index 30e7340..3f30620 100644
+--- a/POS/src/pages/POSSale.vue
++++ b/POS/src/pages/POSSale.vue
+@@ -2146,6 +2146,11 @@ function isPaymentHubCashMode(value) {
+ 	return normalized === normalizePaymentHubMode(modes.cash) || normalized === "cash";
+ }
+ 
++function isPaymentHubManualMode(value) {
++	const mapping = getPaymentHubMapping(value);
++	return mapping?.channel === "Manual / Non-Cash";
++}
++
+ function buildPaymentHubFingerprint() {
+ 	const items = cartStore.invoiceItems.map((item) => [
+ 		item.item_code,
+@@ -2255,6 +2260,7 @@ async function startPaymentHubMappedSale(paymentData, customerValue, draftIdToDe
+ 	const managedRows = activePayments.filter(
+ 		(row) =>
+ 			isPaymentHubCashMode(row.mode_of_payment) ||
++			isPaymentHubManualMode(row.mode_of_payment) ||
+ 			isPaymentHubElectronicMode(row.mode_of_payment) ||
+ 			isPaymentHubPhysicalMode(row.mode_of_payment),
+ 	);

@@ -65,5 +65,5 @@ class BaseProvider:
     def get_payment_status(self, transaction):
         raise NotImplementedError
 
-    def refund(self, transaction, amount, reason=None):
+    def refund(self, transaction, amount, reason=None, retry_key=None):
         raise NotImplementedError
