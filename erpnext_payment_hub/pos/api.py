@@ -1429,6 +1429,10 @@ def _resolve_completion_shift(session, current_pos_opening_shift=None, current_p
     ``session.pos_opening_shift`` remains the immutable/original audit context.
     A payment captured after that shift closes is completed in the currently-open
     shift for the same POS Profile.
+
+    A stale browser may still send the previous closed shift. In that case,
+    safely resolve the currently-open shift for the same POS Profile instead of
+    blocking completion of an already-captured payment.
     """
     if current_pos_profile and session.pos_profile and current_pos_profile != session.pos_profile:
         frappe.throw(
@@ -1436,34 +1440,107 @@ def _resolve_completion_shift(session, current_pos_opening_shift=None, current_p
             f"not {current_pos_profile}."
         )
 
-    requested = current_pos_opening_shift
-    if not requested:
-        original = get_shift_info(getattr(session, "pos_opening_shift", None))
-        if original and str(original.get("status") or "").strip() == "Open":
-            requested = original.name
-        else:
+    profile = session.pos_profile or current_pos_profile
+
+    def validate_access(shift_name, info):
+        if not info:
+            frappe.throw(f"POS Opening Shift {shift_name} was not found.")
+
+        if info.get("pos_profile") and profile and info.get("pos_profile") != profile:
             frappe.throw(
-                "Payment is captured, but the original POS shift is closed. "
-                "Open a current POS shift for this POS Profile, then complete the sale from Payment Hub."
+                f"POS Opening Shift {shift_name} belongs to POS Profile {info.get('pos_profile')}, "
+                f"not {profile}."
             )
 
-    info = get_shift_info(requested)
-    if not info:
-        frappe.throw(f"POS Opening Shift {requested} was not found.")
-    if info.get("pos_profile") and session.pos_profile and info.get("pos_profile") != session.pos_profile:
-        frappe.throw(
-            f"POS Opening Shift {requested} belongs to POS Profile {info.get('pos_profile')}, "
-            f"not {session.pos_profile}."
+        if info.get("user") and info.get("user") != frappe.session.user and not can_view_all_profiles():
+            frappe.throw(
+                f"POS Opening Shift {shift_name} belongs to cashier {info.get('user')}. "
+                "Open your own shift before completing this sale.",
+                frappe.PermissionError,
+            )
+
+        return shift_name
+
+    def find_current_open_shift():
+        if not profile:
+            return None
+
+        # Always prefer the current user's own open shift.
+        own = frappe.get_all(
+            "POS Opening Shift",
+            filters={
+                "pos_profile": profile,
+                "status": "Open",
+                "user": frappe.session.user,
+            },
+            pluck="name",
+            order_by="creation desc",
+            limit=1,
         )
-    if str(info.get("status") or "").strip() != "Open":
-        frappe.throw(f"POS Opening Shift {requested} is not Open.")
-    if info.get("user") and info.get("user") != frappe.session.user and not can_view_all_profiles():
+        if own:
+            return own[0]
+
+        # Managers/authorized users may complete into another currently-open
+        # shift for the same profile.
+        if can_view_all_profiles():
+            rows = frappe.get_all(
+                "POS Opening Shift",
+                filters={
+                    "pos_profile": profile,
+                    "status": "Open",
+                },
+                pluck="name",
+                order_by="creation desc",
+                limit=1,
+            )
+            if rows:
+                return rows[0]
+
+        return None
+
+    requested = current_pos_opening_shift
+
+    if requested:
+        info = get_shift_info(requested)
+
+        if not info:
+            frappe.throw(f"POS Opening Shift {requested} was not found.")
+
+        if info.get("pos_profile") and profile and info.get("pos_profile") != profile:
+            frappe.throw(
+                f"POS Opening Shift {requested} belongs to POS Profile {info.get('pos_profile')}, "
+                f"not {profile}."
+            )
+
+        if str(info.get("status") or "").strip() == "Open":
+            return validate_access(requested, info)
+
+        # The browser supplied a real shift, but it is now closed. This is
+        # expected for payments captured after a shift change.
+        current = find_current_open_shift()
+        if current:
+            return validate_access(current, get_shift_info(current))
+
         frappe.throw(
-            f"POS Opening Shift {requested} belongs to cashier {info.get('user')}. "
-            "Open your own shift before completing this sale.",
-            frappe.PermissionError,
+            f"POS Opening Shift {requested} is not Open, and no current open shift "
+            f"was found for POS Profile {profile}."
         )
-    return requested
+
+    # No shift was supplied by the browser. Reuse the original only if it is
+    # still open.
+    original = get_shift_info(getattr(session, "pos_opening_shift", None))
+    if original and str(original.get("status") or "").strip() == "Open":
+        return validate_access(original.name, original)
+
+    # Original shift closed: resolve the current live shift for this profile.
+    current = find_current_open_shift()
+    if current:
+        return validate_access(current, get_shift_info(current))
+
+    frappe.throw(
+        "Payment is captured, but no open POS shift is available for "
+        f"POS Profile {profile}. Open a current POS shift, then complete the sale."
+    )
 
 
 @frappe.whitelist()
