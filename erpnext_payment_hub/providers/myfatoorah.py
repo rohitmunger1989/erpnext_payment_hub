@@ -88,58 +88,120 @@ class MyFatoorahProvider(BaseProvider):
         }
 
     def get_payment_status(self, transaction):
+        """Return the current MyFatoorah payment status.
+
+        MyFatoorah may initially return a temporary/in-progress PaymentId when
+        the hosted KNET payment is created. After payment, the same InvoiceId
+        can contain a different final successful PaymentId.
+
+        Therefore:
+        1. Try the stored PaymentId when available.
+        2. If it is already successful, use it.
+        3. If it is invalid/stale/pending, recover through InvoiceId.
+        4. Locate the successful invoice transaction.
+        5. Verify its final PaymentId through the v3 endpoint.
+
+        This recovery is MyFatoorah-specific and does not affect Tap or
+        UPayments.
+        """
         payment_id = transaction.provider_payment_id
+        payment_result = None
 
-        # Preferred v3 lookup when PaymentId is already known.
+        # First try the PaymentId already stored locally.
+        #
+        # MyFatoorah can return an initial/in-progress PaymentId which later
+        # becomes invalid for v3 lookup after KNET creates the final successful
+        # transaction. Do not stop recovery merely because that stale ID exists.
         if payment_id:
-            return self.get_payment_status_by_payment_id(payment_id)
+            try:
+                payment_result = self.get_payment_status_by_payment_id(payment_id)
 
-        # Recovery path: MyFatoorah may complete the hosted checkout without the
-        # browser returning through our callback. InvoiceId is returned when the
-        # payment link is created, and MyFatoorah supports payment inquiry by it.
+                payment_status = str(
+                    payment_result.get("status") or ""
+                ).strip().upper()
+
+                if payment_status in {
+                    "SUCCESS",
+                    "SUCCSS",
+                    "CAPTURED",
+                    "PAID",
+                }:
+                    return payment_result
+
+                # A valid but non-final PaymentId (for example INPROGRESS)
+                # must still be reconciled against InvoiceId because the same
+                # invoice may now contain a newer successful KNET transaction.
+
+            except ProviderError:
+                # A stale/pre-final PaymentId can return HTTP 400 Invalid data.
+                # Continue with the immutable InvoiceId recovery path.
+                payment_result = None
+
         invoice_id = transaction.provider_order_id
+
         if not invoice_id:
+            # If PaymentId inquiry itself worked but is merely pending and no
+            # InvoiceId exists, return the real provider result rather than
+            # inventing a different state.
+            if payment_result:
+                return payment_result
+
             raise ProviderError(
                 "MyFatoorah PaymentId and InvoiceId are both missing; payment status "
                 "cannot be recovered automatically."
             )
 
+        # InvoiceId is stable across the hosted checkout lifecycle and can be
+        # used to discover the final successful transaction/PaymentId.
         result = self.request(
             "POST",
             f"{self.base_url()}/v2/GetPaymentStatus",
-            json_data={"Key": str(invoice_id), "KeyType": "InvoiceId"},
+            json_data={
+                "Key": str(invoice_id),
+                "KeyType": "InvoiceId",
+            },
         )
+
         data = result.get("Data") or {}
         transactions = data.get("InvoiceTransactions") or []
 
-        # Prefer a successful/captured transaction, otherwise use the latest one.
         successful = None
+
+        # MyFatoorah v2 currently returns the successful KNET status as
+        # "Succss" (without the second 'e'), while other responses/endpoints
+        # can use SUCCESS/PAID/CAPTURED.
+        successful_statuses = {
+            "SUCCESS",
+            "SUCCSS",
+            "CAPTURED",
+            "PAID",
+        }
+
         for row in transactions:
             raw_status = (
                 row.get("TransactionStatus")
                 or row.get("Status")
                 or ""
             )
-            if str(raw_status).upper() in {
-                "SUCCESS",
-                "CAPTURED",
-                "PAID",
-            }:
+
+            if str(raw_status).strip().upper() in successful_statuses:
                 successful = row
                 break
 
         txn = successful or (transactions[-1] if transactions else {})
 
-        payment_id = (
+        recovered_payment_id = (
             txn.get("PaymentId")
             or txn.get("PaymentID")
             or txn.get("paymentId")
         )
 
-        # If InvoiceId inquiry recovered a PaymentId, immediately verify via the
-        # current v3 endpoint so the final stored response is canonical.
-        if payment_id:
-            return self.get_payment_status_by_payment_id(str(payment_id))
+        # When InvoiceId reveals the final successful PaymentId, verify that
+        # exact payment through MyFatoorah v3 and return the canonical result.
+        if recovered_payment_id:
+            return self.get_payment_status_by_payment_id(
+                str(recovered_payment_id)
+            )
 
         return {
             "status": (
