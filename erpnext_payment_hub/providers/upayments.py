@@ -8,6 +8,79 @@ from erpnext_payment_hub.providers.base import BaseProvider, ProviderError
 class UPaymentsProvider(BaseProvider):
     provider_name = "UPayments"
 
+    def get_token(self):
+        token = self.account.get_password("api_key", raise_exception=False)
+        if not token:
+            raise ProviderError("UPayments API Key / Token is missing.")
+        return token
+
+    def request(self, method, url, *, json_data=None, timeout=30):
+        import base64
+        import hashlib
+        import hmac
+        import json
+        import time
+
+        import requests
+
+        secret = self.account.get_password("secret_key", raise_exception=False)
+        if not secret:
+            raise ProviderError("UPayments HMAC Secret Key is missing.")
+
+        method = method.upper()
+        parsed = urlparse(url)
+        prefix = "/api/v1/"
+        if not parsed.path.startswith(prefix):
+            raise ProviderError("UPayments URL must contain /api/v1/.")
+
+        endpoint = parsed.path[len(prefix):]
+        body = (
+            json.dumps(json_data, separators=(",", ":"), ensure_ascii=False)
+            if json_data is not None else ""
+        )
+        timestamp = str(int(time.time()))
+        signing_data = f"{timestamp}{method}{endpoint}{body}"
+        signature = base64.b64encode(
+            hmac.new(
+                secret.encode("utf-8"),
+                signing_data.encode("utf-8"),
+                hashlib.sha256,
+            ).digest()
+        ).decode("ascii")
+
+        headers = self.headers()
+        headers.update({
+            "X-Timestamp": timestamp,
+            "X-Signature": signature,
+        })
+
+        try:
+            response = requests.request(
+                method,
+                url,
+                data=body.encode("utf-8") if body else None,
+                headers=headers,
+                timeout=timeout,
+            )
+        except requests.RequestException as exc:
+            raise ProviderError("UPayments connection failed.") from exc
+
+        try:
+            result = response.json()
+        except ValueError:
+            raise ProviderError(
+                f"UPayments returned non-JSON (HTTP {response.status_code})."
+            )
+
+        if not response.ok:
+            raise ProviderError(
+                f"UPayments API error {response.status_code}: {result}"
+            )
+        if not isinstance(result, dict):
+            raise ProviderError("UPayments returned an unexpected response format.")
+        return result
+
+
     def base_url(self):
         if self.account.base_url_override:
             return self.account.base_url_override.rstrip("/")
@@ -122,7 +195,7 @@ class UPaymentsProvider(BaseProvider):
             ),
             "returnUrl": return_url,
             "cancelUrl": cancel_url or return_url,
-            "notificationUrl": webhook_url or return_url,
+            "notificationUrl": (webhook_url or return_url).replace(" ", "%20"),
         }
 
         source = self._source(payment_method)
@@ -142,6 +215,12 @@ class UPaymentsProvider(BaseProvider):
             or data.get("paymentURL")
             or data.get("url")
         )
+
+        if not payment_url:
+            raise ProviderError(
+                "UPayments did not return a payment link. "
+                f"Provider message: {result.get('message') or result.get('error') or 'No message returned'}"
+            )
 
         session_id = None
         if payment_url:
