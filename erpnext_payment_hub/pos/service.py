@@ -88,8 +88,22 @@ def repair_stale_invoice_reference(session):
     return stale_reference
 
 
+def is_upayments_allocation(allocation):
+    """UPayments link closure comes from provider verification, not local timers."""
+    provider = getattr(allocation, "provider", None)
+    account = getattr(allocation, "provider_account", None)
+    if hasattr(allocation, "get"):
+        provider = provider or allocation.get("provider")
+        account = account or allocation.get("provider_account")
+    if not provider and account:
+        provider = frappe.db.get_value("Payment Provider Account", account, "provider")
+    return provider == "UPayments"
+
+
 def allocation_link_deadline(allocation):
     """Return the local/provider-aware deadline for an electronic payment attempt."""
+    if is_upayments_allocation(allocation):
+        return None
     expires_at = getattr(allocation, "expires_at", None) or (
         allocation.get("expires_at") if hasattr(allocation, "get") else None
     )
@@ -400,6 +414,10 @@ def sync_allocation_from_gateway(gateway_doc):
         allocation.provider = gateway_doc.provider
         allocation.actual_payment_method = gateway_doc.provider_payment_type or allocation.actual_payment_method
         allocation.payment_url = gateway_doc.payment_url or allocation.payment_url
+        if gateway_doc.provider == "UPayments":
+            allocation.expires_at = None
+            if gateway_doc.status == "Pending":
+                allocation.failed_reason = None
 
         # Captured/Refunded are terminal confirmations for the local POS queue.
         # Do not downgrade them when a late callback reports Pending/Failed.
@@ -524,7 +542,7 @@ def expire_stale_pos_payments(limit=100):
                 normalized = provider.get_payment_status(txn)
                 update_transaction_from_status(txn, normalized)
                 allocation.reload()
-            if allocation.status == "Waiting":
+            if allocation.status == "Waiting" and not is_upayments_allocation(allocation):
                 allocation.status = "Expired"
                 allocation.save(ignore_permissions=True)
                 recalculate_session(allocation.session, publish=True)

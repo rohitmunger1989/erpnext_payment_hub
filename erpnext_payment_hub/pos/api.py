@@ -39,6 +39,7 @@ from erpnext_payment_hub.pos.service import (
     PAID_PENDING_SESSION_STATUSES,
     PENDING_SESSION_STATUSES,
     allocation_link_expired,
+    is_upayments_allocation,
     allocation_rows,
     assert_amount_available,
     assert_open_session,
@@ -111,7 +112,7 @@ def _allocation_response(allocation):
         "mobile_number": allocation.mobile_number,
         "payment_url": allocation.payment_url,
         "idempotency_key": allocation.idempotency_key,
-        "expires_at": allocation.expires_at,
+        "expires_at": None if is_upayments_allocation(allocation) else allocation.expires_at,
         "link_send_count": int(allocation.link_send_count or 0),
         "last_whatsapp_message": allocation.last_whatsapp_message,
         "cancelled_at": allocation.cancelled_at,
@@ -403,6 +404,9 @@ def _payment_link_lifetime_minutes(settings, account, normalized):
     A provider-reported expiry is authoritative. Otherwise an account-specific
     fallback wins, then the global Payment Hub fallback.
     """
+    if account.provider == "UPayments":
+        # Local fallback settings do not revoke a remote UPayments checkout.
+        return None
     try:
         provider_minutes = float((normalized or {}).get("provider_expiry_minutes") or 0)
     except (TypeError, ValueError):
@@ -457,6 +461,24 @@ def create_payment_link(
     customer = customer_payload(session, mobile_number)
     if not customer.get("phone"):
         frappe.throw("Customer mobile number is required for Electronic Payment.")
+
+    if account.provider == "UPayments":
+        for previous in allocation_rows(session.name):
+            if previous.channel != CHANNEL_ELECTRONIC or not previous.gateway_transaction:
+                continue
+            previous_txn = frappe.get_doc("Gateway Transaction", previous.gateway_transaction)
+            if previous_txn.provider != "UPayments":
+                continue
+            previous_account = get_provider_account(previous_txn.provider_account)
+            verified = get_provider(previous_account).get_payment_status(previous_txn)
+            update_transaction_from_status(previous_txn, verified)
+            if previous_txn.status not in ("Failed", "Refunded"):
+                frappe.throw(
+                    f"Previous UPayments attempt {previous.name} is not confirmed closed. "
+                    "Check its status and reuse the existing link while it remains pending."
+                )
+        session.reload()
+        amount = assert_amount_available(session, amount)
 
     settings = get_settings()
     allocation = create_allocation(
@@ -1084,7 +1106,7 @@ def send_payment_link(allocation_name):
     # Before a resend, refresh the provider status. Never send a URL that the
     # provider has already captured, abandoned, declined, cancelled or expired.
     # The first send immediately after charge creation does not need an extra API call.
-    link_expired = bool(allocation.expires_at and get_datetime(allocation.expires_at) <= now_datetime())
+    link_expired = allocation_link_expired(allocation)
     if int(allocation.link_send_count or 0) > 0 or link_expired:
         if allocation.gateway_transaction:
             try:
@@ -1106,7 +1128,7 @@ def send_payment_link(allocation_name):
                 f"This payment attempt is {allocation.status}. "
                 "Create a new payment link instead of resending the old link."
             )
-        if allocation.expires_at and get_datetime(allocation.expires_at) <= now_datetime():
+        if allocation_link_expired(allocation):
             allocation.status = "Expired"
             allocation.failed_reason = allocation.failed_reason or "Payment link lifetime ended before resend."
             allocation.save(ignore_permissions=True)
@@ -1174,7 +1196,7 @@ def create_new_payment_link(
         if old_row.status not in ("Waiting", "Expired", "Failed", "Cancelled") or not old_row.gateway_transaction:
             continue
         txn = frappe.get_doc("Gateway Transaction", old_row.gateway_transaction)
-        if txn.status == "Pending" or old_row.status == "Waiting":
+        if txn.provider == "UPayments" or txn.status == "Pending" or old_row.status == "Waiting":
             try:
                 check_pos_payment(old_row.name)
                 old_row = frappe.get_doc("POS Payment Allocation", old_row.name)
@@ -1792,11 +1814,16 @@ def _queue_sessions(
         filters["pos_station"] = pos_station
 
     if queue == "Waiting":
-        # Waiting is intentionally profile-scoped, not shift/date-scoped. A link
-        # created near shift close must remain visible to the next cashier until
-        # the recovery window expires or the payment is resolved.
+        # A recovery deadline cannot hide unresolved money/provider sessions.
+        # Retain the deadline for unpaid drafts, but keep Pending sessions visible.
+        active_filters = dict(filters)
+        active_filters["status"] = ["in", list(PENDING_SESSION_STATUSES)]
+        eligible = frappe.get_all("POS Payment Session", filters=active_filters, pluck="name")
+        draft_filters = dict(filters)
+        draft_filters.update({"status": "Draft", "recover_until": [">=", now_datetime()]})
+        eligible += frappe.get_all("POS Payment Session", filters=draft_filters, pluck="name")
         filters["status"] = ["in", ["Draft", *list(PENDING_SESSION_STATUSES)]]
-        filters["recover_until"] = [">=", now_datetime()]
+        filters["name"] = ["in", list(dict.fromkeys(eligible)) or ["__none__"]]
     elif queue in ("Paid", "Ready"):
         filters["status"] = ["in", list(PAID_PENDING_SESSION_STATUSES)]
     elif queue in ("Failed", "Expired", "Cancelled"):
@@ -1998,7 +2025,10 @@ def get_sales_queue(
         row["electronic_mode_of_payment"] = allocation.mode_of_payment if allocation else None
         row["electronic_provider_account"] = allocation.provider_account if allocation else None
         row["electronic_failed_reason"] = allocation.failed_reason if allocation else None
-        row["electronic_expires_at"] = allocation.expires_at if allocation else None
+        row["electronic_expires_at"] = (
+            allocation.expires_at
+            if allocation and not is_upayments_allocation(allocation) else None
+        )
         row["link_send_count"] = int(allocation.link_send_count or 0) if allocation else 0
         row["link_sent_at"] = allocation.link_sent_at if allocation else None
         row["last_whatsapp_message"] = allocation.last_whatsapp_message if allocation else None

@@ -798,6 +798,58 @@ def _find_refund_gateway_transaction(
             return frappe.get_doc("Gateway Transaction", row.name)
     return None
 
+def _upayments_notify_url_rejected(error):
+    """Recognize only the exact 422 field rejection; uncertainty stays review-only."""
+    import ast
+
+    status = getattr(error, "http_status", None)
+    payload = getattr(error, "response_payload", None)
+    if status is None and isinstance(error, str):
+        prefix = "UPayments API error 422: "
+        if not error.startswith(prefix):
+            return False
+        try:
+            payload = ast.literal_eval(error[len(prefix):])
+        except (ValueError, SyntaxError):
+            return False
+        status = 422
+    if status != 422 or not isinstance(payload, dict) or payload.get("data"):
+        return False
+    errors = payload.get("errors")
+    return (
+        isinstance(errors, dict)
+        and set(errors) == {"notifyUrl"}
+        and errors["notifyUrl"] == ["The notify url must be a valid URL."]
+    )
+
+
+def _recover_rejected_upayments_refund(row):
+    """Make a known validation rejection retryable; never send a refund here."""
+    if row.provider != "UPayments" or row.status != "Manual Review":
+        return row
+    frappe.db.sql(
+        "SELECT name FROM `tabPOS Refund Allocation` WHERE name=%s FOR UPDATE",
+        (row.name,),
+    )
+    row.reload()
+    if row.status != "Manual Review":
+        return row
+    row = _recover_refund_gateway_transaction(row)
+    if row.refund_gateway_transaction or not _upayments_notify_url_rejected(row.error or ""):
+        return row
+    if getattr(row, "provider_refund_id", None) or not row.source_gateway_transaction:
+        return row
+    return_doc = frappe.get_doc("Sales Invoice", row.return_invoice)
+    if return_doc.docstatus != 0 or not cint(return_doc.is_return):
+        return row
+    # Preserve the original error as audit evidence. The existing deliberate
+    # retry endpoint still checks manager approval and refundable balance.
+    row.status = "Failed"
+    row.provider_status = "Validation Rejected (422)"
+    row.save(ignore_permissions=True)
+    return row
+
+
 def _refresh_refund_row(row):
     row = _recover_refund_gateway_transaction(row)
     if not row.refund_gateway_transaction:
@@ -1022,6 +1074,7 @@ def process_pos_return_refund(
             continue
 
         row.status = "Processing"
+        row.provider_status = "Processing"
         row.save(ignore_permissions=True)
         frappe.db.commit()
 
@@ -1077,7 +1130,18 @@ def process_pos_return_refund(
             else:
                 # External POSTs cannot be rolled back. Do not retry automatically
                 # when the provider result is uncertain; leave a durable review marker.
-                row.status = "Manual Review"
+                balance_rejected = (
+                    row.provider == "UPayments"
+                    and getattr(exc, "refund_rejection_code", None)
+                    == "INSUFFICIENT_MERCHANT_WALLET_BALANCE"
+                )
+                url_rejected = row.provider == "UPayments" and _upayments_notify_url_rejected(exc)
+                row.status = "Failed" if balance_rejected or url_rejected else "Manual Review"
+                row.provider_status = (
+                    "Insufficient Merchant Wallet Balance" if balance_rejected
+                    else "Validation Rejected (422)" if url_rejected
+                    else "Outcome Unconfirmed"
+                )
                 row.error = str(exc)[:1000]
             row.save(ignore_permissions=True)
             frappe.db.commit()
@@ -1252,6 +1316,7 @@ def refresh_return_refunds(return_invoice):
             continue
         try:
             row = _recover_refund_gateway_transaction(row)
+            row = _recover_rejected_upayments_refund(row)
             if row.refund_gateway_transaction:
                 _refresh_refund_row(row)
         except Exception:
@@ -1342,6 +1407,7 @@ def retry_failed_return_refunds(return_invoice):
             )
 
         row.status = "Processing"
+        row.provider_status = "Processing"
         row.error = None
         # A previous pending notification must not suppress the final successful
         # confirmation for this new attempt.
@@ -1402,7 +1468,18 @@ def retry_failed_return_refunds(return_invoice):
                 if row.status == "Completed" and not row.completed_at:
                     row.completed_at = now_datetime()
             else:
-                row.status = "Manual Review"
+                balance_rejected = (
+                    row.provider == "UPayments"
+                    and getattr(exc, "refund_rejection_code", None)
+                    == "INSUFFICIENT_MERCHANT_WALLET_BALANCE"
+                )
+                url_rejected = row.provider == "UPayments" and _upayments_notify_url_rejected(exc)
+                row.status = "Failed" if balance_rejected or url_rejected else "Manual Review"
+                row.provider_status = (
+                    "Insufficient Merchant Wallet Balance" if balance_rejected
+                    else "Validation Rejected (422)" if url_rejected
+                    else "Outcome Unconfirmed"
+                )
                 row.error = str(exc)[:1000]
             row.save(ignore_permissions=True)
             frappe.db.commit()

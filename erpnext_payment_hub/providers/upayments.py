@@ -34,6 +34,8 @@ class UPaymentsProvider(BaseProvider):
             raise ProviderError("UPayments URL must contain /api/v1/.")
 
         endpoint = parsed.path[len(prefix):]
+        if parsed.query:
+            endpoint += "?" + parsed.query
         body = (
             json.dumps(json_data, separators=(",", ":"), ensure_ascii=False)
             if json_data is not None else ""
@@ -73,9 +75,10 @@ class UPaymentsProvider(BaseProvider):
             )
 
         if not response.ok:
-            raise ProviderError(
-                f"UPayments API error {response.status_code}: {result}"
-            )
+            error = ProviderError(f"UPayments API error {response.status_code}: {result}")
+            error.http_status = response.status_code
+            error.response_payload = result
+            raise error
         if not isinstance(result, dict):
             raise ProviderError("UPayments returned an unexpected response format.")
         return result
@@ -104,6 +107,16 @@ class UPaymentsProvider(BaseProvider):
         }.get(method)
 
 
+    @staticmethod
+    def _link_session_id(transaction):
+        if not transaction:
+            return None
+        payment_url = getattr(transaction, "payment_url", None) or ""
+        return (
+            parse_qs(urlparse(payment_url).query).get("session_id", [None])[0]
+            or getattr(transaction, "provider_session_id", None)
+        )
+
     def _parse_status_response(self, result, transaction=None):
         data = result.get("data") or result.get("Data") or {}
         paymit = data.get("payMit") or data.get("paymit") or {}
@@ -123,19 +136,35 @@ class UPaymentsProvider(BaseProvider):
         )
 
         existing_order = getattr(transaction, "provider_order_id", None) if transaction else None
-        existing_session = getattr(transaction, "provider_session_id", None) if transaction else None
+        existing_session = self._link_session_id(transaction)
+        terminal = txn_data.get("isTerminalStatus")
+        if terminal is None:
+            terminal = data.get("isTerminalStatus")
+        # Only an explicit boolean closes an unpaid session. A failed card/KNET
+        # attempt may leave the original payment link available for another try.
+        raw_status = str(payment_status or "").strip().upper().replace(" ", "_")
+        if raw_status in {"CAPTURED", "SUCCESS", "PAID", "COMPLETED", "REFUNDED"}:
+            normalized_status = raw_status
+        elif terminal is True:
+            if not raw_status or raw_status in {
+                "PENDING", "INITIATED", "AUTHORIZED", "ACCEPTED", "REQUESTED",
+                "IN_PROGRESS", "INPROGRESS",
+            }:
+                raise ProviderError("UPayments returned an inconsistent terminal status.")
+            normalized_status = "FAILED"
+        else:
+            normalized_status = "PENDING"
 
         return {
-            "status": payment_status,
+            "status": normalized_status,
+            "provider_attempt_status": payment_status,
+            "provider_is_terminal": terminal if isinstance(terminal, bool) else None,
             "provider_transaction_id": txn_data.get("payment_id") or txn_data.get("paymentId"),
-            "provider_order_id": txn_data.get("order_id") or txn_data.get("orderId") or existing_order,
+            "provider_order_id": existing_order or txn_data.get("order_id") or txn_data.get("orderId"),
             "provider_payment_id": txn_data.get("payment_id") or txn_data.get("paymentId"),
             "provider_tracking_id": txn_data.get("track_id") or txn_data.get("trackId"),
-            "provider_session_id": (
-                txn_data.get("session_id")
-                or txn_data.get("sessionId")
-                or existing_session
-            ),
+            # Never overwrite the checkout session with an individual attempt ID.
+            "provider_session_id": existing_session,
             "payment_type": txn_data.get("payment_type") or txn_data.get("paymentType") or txn_data.get("payment_method"),
             "requested_order_id": txn_data.get("merchant_requested_order_id") or txn_data.get("requested_order_id") or txn_data.get("requestedOrderId"),
             "raw": result,
@@ -242,18 +271,103 @@ class UPaymentsProvider(BaseProvider):
 
     def get_payment_status(self, transaction):
         track_id = transaction.provider_tracking_id
-        session_id = getattr(transaction, "provider_session_id", None)
+        session_id = self._link_session_id(transaction)
 
+        # A confirmed capture on a known attempt must not be hidden by a stale
+        # session response. For unpaid attempts, verify the original session.
+        attempt = None
         if track_id:
-            url = f"{self.base_url()}/get-payment-status/{quote(str(track_id), safe='')}"
-        elif session_id:
-            url = f"{self.base_url()}/get-payment-status?session_id={quote(str(session_id), safe='')}"
-        else:
-            raise ProviderError("UPayments track_id/session_id is missing.")
+            result = self.request(
+                "GET",
+                f"{self.base_url()}/get-payment-status/{quote(str(track_id), safe='')}",
+            )
+            attempt = self._parse_status_response(result, transaction=transaction)
+            if attempt["status"] in {"CAPTURED", "SUCCESS", "PAID", "COMPLETED", "REFUNDED"}:
+                return attempt
 
-        result = self.request("GET", url)
-        return self._parse_status_response(result, transaction=transaction)
+        if session_id:
+            result = self.request(
+                "GET",
+                f"{self.base_url()}/get-payment-status?session_id={quote(str(session_id), safe='')}",
+            )
+            return self._parse_status_response(result, transaction=transaction)
+        if attempt is not None:
+            # A transaction-attempt failure alone cannot close the checkout link.
+            if attempt["status"] == "FAILED":
+                attempt["status"] = "PENDING"
+            return attempt
+        raise ProviderError("UPayments track_id/session_id is missing.")
 
+
+    @staticmethod
+    def insufficient_balance_rejection(payload, http_status=None):
+        """Recognize an explicit refusal, never a queued/partly accepted refund."""
+        if not isinstance(payload, dict):
+            return False
+        if http_status is not None and http_status not in (200, 201, 400, 402, 422):
+            return False
+        status = payload.get("status")
+        if status is not False and not (
+            status is None and http_status in (400, 402, 422)
+        ):
+            return False
+        # Even with a failure flag, any accepted refund/request identifier makes
+        # the outcome uncertain. Never authorize a duplicate on that response.
+        stack = [payload]
+        while stack:
+            item = stack.pop()
+            if isinstance(item, dict):
+                for key, value in item.items():
+                    compact = str(key).lower().replace("_", "")
+                    if compact in {
+                        "refundorderid", "refundid", "refundrequestid",
+                        "refunrequestid", "refundarn", "generatedinvoiceid",
+                    } and value:
+                        return False
+                    if compact in {"generated", "accepted", "success"} and value:
+                        return False
+                    if isinstance(value, (dict, list)):
+                        stack.append(value)
+            elif isinstance(item, list):
+                stack.extend(item)
+        phrases = {
+            "insufficient balance", "insufficient wallet balance",
+            "insufficient merchant balance", "insufficient merchant wallet balance",
+            "insufficient funds", "not enough balance",
+        }
+        for key in ("message", "error", "code", "error_code"):
+            value = payload.get(key)
+            if not isinstance(value, str):
+                continue
+            normalized = " ".join(value.lower().replace("_", " ").replace("-", " ").split()).strip(" .!:;")
+            if normalized in phrases:
+                return True
+        return False
+
+    @staticmethod
+    def _balance_rejection_error(payload, transaction, amount, http_status=None):
+        try:
+            import json
+            import frappe
+
+            frappe.log_error(
+                title=f"UPayments refund balance rejection: {transaction.name}",
+                message=json.dumps({
+                    "original_transaction": transaction.name,
+                    "requested_amount": str(amount),
+                    "provider_response": payload,
+                }, ensure_ascii=False, default=str),
+            )
+        except Exception:
+            pass
+        error = ProviderError(
+            "Insufficient UPayments wallet balance. "
+            "Top up your merchant wallet, then click Retry Refund."
+        )
+        error.refund_rejection_code = "INSUFFICIENT_MERCHANT_WALLET_BALANCE"
+        error.response_payload = payload
+        error.http_status = http_status
+        return error
 
     def refund(self, transaction, amount, reason=None, retry_key=None):
         if self.account.test_mode:
@@ -263,11 +377,19 @@ class UPaymentsProvider(BaseProvider):
                 "to test full or partial refunds."
             )
 
-        if not transaction.provider_order_id:
-            raise ProviderError("UPayments original orderId is missing.")
+        # The merchant reference used to locate callbacks is not the provider's
+        # refund order ID. Obtain it from a verified original-payment response.
+        verified = self.get_payment_status(transaction)
+        if verified.get("status") not in {"CAPTURED", "SUCCESS", "PAID", "COMPLETED"}:
+            raise ProviderError("UPayments original payment is not confirmed captured.")
+        payment_data = (verified.get("raw") or {}).get("data") or {}
+        payment_txn = payment_data.get("transaction") or payment_data.get("transactionData") or payment_data.get("transaction_data") or {}
+        refund_order_id = payment_txn.get("refund_order_id") or payment_txn.get("order_id") or payment_txn.get("orderId")
+        if not refund_order_id:
+            raise ProviderError("UPayments verified refund order ID is missing.")
 
         payload = {
-            "orderId": transaction.provider_order_id,
+            "orderId": refund_order_id,
             "totalPrice": float(amount),
             "reference": (
                 f"{transaction.reference_name or transaction.name}-R{int(retry_key)}"
@@ -277,20 +399,117 @@ class UPaymentsProvider(BaseProvider):
             "notifyUrl": (
                 f"{__import__('frappe').utils.get_url()}/api/method/"
                 "erpnext_payment_hub.webhook.upayments_refund"
-                f"?provider_account={self.account.name}"
+                f"?provider_account={quote(self.account.name, safe='')}"
             ),
             "refundReason": reason or "ERPNext customer refund",
         }
 
-        result = self.request(
-            "POST",
-            f"{self.base_url()}/create-refund",
-            json_data=payload,
-        )
+        try:
+            result = self.request(
+                "POST",
+                f"{self.base_url()}/create-refund",
+                json_data=payload,
+            )
+        except ProviderError as exc:
+            response_payload = getattr(exc, "response_payload", None)
+            http_status = getattr(exc, "http_status", None)
+            if self.insufficient_balance_rejection(response_payload, http_status):
+                raise self._balance_rejection_error(
+                    response_payload, transaction, amount, http_status
+                ) from exc
+            raise
+        if self.insufficient_balance_rejection(result):
+            raise self._balance_rejection_error(result, transaction, amount)
         data = result.get("data") or {}
+        if result.get("status") is not True or not data.get("refundOrderId") or not data.get("orderId"):
+            # Preserve the actual provider response without authorizing another POST.
+            # Audit logging must never turn an accepted refund into a local failure.
+            try:
+                import json
+                import frappe
+
+                frappe.log_error(
+                    title=f"UPayments refund response review: {transaction.name}",
+                    message=json.dumps({
+                        "original_transaction": transaction.name,
+                        "requested_amount": str(amount),
+                        "provider_response": result,
+                    }, ensure_ascii=False, default=str),
+                )
+            except Exception:
+                pass
+            provider_message = result.get("message") or result.get("error") or "No message returned"
+            error = ProviderError(
+                "UPayments refund outcome is unconfirmed. "
+                f"Provider status: {result.get('status')!r}; message: {provider_message}. "
+                "Response identifiers are incomplete; review the provider before retrying."
+            )
+            error.response_payload = result
+            raise error
         return {
-            "provider_refund_id": data.get("refundOrderId") or data.get("orderId"),
+            "provider_refund_id": data["refundOrderId"],
+            "provider_order_id": data["orderId"],
             "provider_tracking_id": data.get("refundArn"),
-            "status": "REQUESTED" if result.get("status") else "FAILED",
+            "status": "REQUESTED",
+            "raw": result,
+        }
+
+    def get_refund_status(self, transaction):
+        import json
+        from decimal import Decimal, InvalidOperation
+
+        # Recover identifiers from the original creation response for older rows.
+        raw = getattr(transaction, "response_json", None) or {}
+        if isinstance(raw, str):
+            try:
+                raw = json.loads(raw)
+            except ValueError:
+                raw = {}
+        created = (raw.get("data") or {}) if isinstance(raw, dict) else {}
+        if not isinstance(created, dict):
+            created = {}
+        order_id = created.get("orderId") or getattr(transaction, "provider_order_id", None)
+        refund_id = getattr(transaction, "provider_refund_id", None) or created.get("refundOrderId")
+        if not order_id or not refund_id:
+            raise ProviderError("UPayments refund identifiers are missing; review the provider before retrying.")
+        result = self.request("GET", f"{self.base_url()}/check-refund/{quote(str(order_id), safe='')}")
+        if result.get("status") is not True:
+            raise ProviderError("UPayments did not confirm the refund status lookup.")
+        # Match this exact refund, never another partial refund or the top-level
+        # HTTP/API success flag. Unknown layouts/statuses remain unconfirmed.
+        stack = [result.get("data")]
+        matches = []
+        while stack:
+            value = stack.pop()
+            if isinstance(value, dict):
+                candidate = value.get("refundOrderId") or value.get("refund_order_id")
+                if candidate and str(candidate) == str(refund_id):
+                    matches.append(value)
+                stack.extend(item for item in value.values() if isinstance(item, (dict, list)))
+            elif isinstance(value, list):
+                stack.extend(value)
+        if len(matches) != 1:
+            raise ProviderError("UPayments did not uniquely identify this refund in its status response.")
+        item = matches[0]
+        status = str(item.get("refund_status") or item.get("refundStatus") or item.get("status") or item.get("result") or "").strip().upper()
+        if status == "REFUNDED":
+            normalized = "REFUNDED"
+        elif status in {"FAILED", "REJECTED", "CANCELED", "CANCELLED"}:
+            normalized = "FAILED"
+        elif status in {"INITIATED", "PENDING", "PROCESSING", "REQUESTED", "APPROVED"}:
+            normalized = "PENDING"
+        else:
+            raise ProviderError("UPayments returned an unrecognized refund status; no completion was recorded.")
+        amount = item.get("refundedAmount", item.get("totalPrice", item.get("amount")))
+        if amount is not None:
+            try:
+                if abs(Decimal(str(amount)) - Decimal(str(transaction.amount))) > Decimal("0.0005"):
+                    raise ProviderError("UPayments refund amount does not match this refund allocation.")
+            except InvalidOperation as exc:
+                raise ProviderError("UPayments returned an invalid refund amount.") from exc
+        return {
+            "status": normalized,
+            "provider_refund_id": refund_id,
+            "provider_order_id": order_id,
             "raw": result,
         }
