@@ -457,8 +457,8 @@ class UPaymentsProvider(BaseProvider):
     def get_refund_status(self, transaction):
         import json
         from decimal import Decimal, InvalidOperation
+        import frappe
 
-        # Recover identifiers from the original creation response for older rows.
         raw = getattr(transaction, "response_json", None) or {}
         if isinstance(raw, str):
             try:
@@ -468,22 +468,45 @@ class UPaymentsProvider(BaseProvider):
         created = (raw.get("data") or {}) if isinstance(raw, dict) else {}
         if not isinstance(created, dict):
             created = {}
-        order_id = created.get("orderId") or getattr(transaction, "provider_order_id", None)
+        # The composite creation ID identifies one refund. Status lookup instead
+        # requires the original payment's provider order ID.
+        refund_order_id = created.get("orderId") or getattr(transaction, "provider_order_id", None)
         refund_id = getattr(transaction, "provider_refund_id", None) or created.get("refundOrderId")
-        if not order_id or not refund_id:
-            raise ProviderError("UPayments refund identifiers are missing; review the provider before retrying.")
-        result = self.request("GET", f"{self.base_url()}/check-refund/{quote(str(order_id), safe='')}")
+        original_name = getattr(transaction, "original_transaction", None)
+        if not refund_order_id or not refund_id or not original_name:
+            raise ProviderError("UPayments refund identifiers or original payment are missing; review before retrying.")
+        original = frappe.get_doc("Gateway Transaction", original_name)
+        if original.transaction_type != "Payment" or original.provider_account != self.account.name:
+            raise ProviderError("UPayments refund source does not match the original payment account.")
+        verified = self.get_payment_status(original)
+        if verified.get("status") not in {"CAPTURED", "SUCCESS", "PAID", "COMPLETED", "REFUNDED"}:
+            raise ProviderError("UPayments original payment could not be verified for refund lookup.")
+        payment_data = (verified.get("raw") or {}).get("data") or {}
+        payment = payment_data.get("transaction") or payment_data.get("transactionData") or payment_data.get("transaction_data") or {}
+        original_order_id = payment.get("refund_order_id") or payment.get("order_id") or payment.get("orderId")
+        if not original_order_id:
+            raise ProviderError("UPayments verified original provider order ID is missing.")
+        result = self.request(
+            "GET", f"{self.base_url()}/check-refund/{quote(str(original_order_id), safe='')}"
+        )
         if result.get("status") is not True:
             raise ProviderError("UPayments did not confirm the refund status lookup.")
-        # Match this exact refund, never another partial refund or the top-level
-        # HTTP/API success flag. Unknown layouts/statuses remain unconfirmed.
+
+        # Match this exact refund among all partial refunds of the original sale.
         stack = [result.get("data")]
         matches = []
         while stack:
             value = stack.pop()
             if isinstance(value, dict):
-                candidate = value.get("refundOrderId") or value.get("refund_order_id")
-                if candidate and str(candidate) == str(refund_id):
+                item_refund_id = value.get("refundOrderId") or value.get("refund_order_id")
+                item_order_id = value.get("order_id") or value.get("orderId")
+                if item_refund_id and str(item_refund_id) == str(refund_id):
+                    if item_order_id and str(item_order_id) != str(refund_order_id):
+                        raise ProviderError("UPayments returned conflicting refund identifiers.")
+                    matches.append(value)
+                elif item_order_id and str(item_order_id) == str(refund_order_id):
+                    if item_refund_id and str(item_refund_id) != str(refund_id):
+                        raise ProviderError("UPayments returned conflicting refund identifiers.")
                     matches.append(value)
                 stack.extend(item for item in value.values() if isinstance(item, (dict, list)))
             elif isinstance(value, list):
@@ -492,7 +515,12 @@ class UPaymentsProvider(BaseProvider):
             raise ProviderError("UPayments did not uniquely identify this refund in its status response.")
         item = matches[0]
         status = str(item.get("refund_status") or item.get("refundStatus") or item.get("status") or item.get("result") or "").strip().upper()
-        if status == "REFUNDED":
+        is_refunded = item.get("is_refunded")
+        if is_refunded is not None and not isinstance(is_refunded, bool):
+            raise ProviderError("UPayments returned an invalid refund-completion flag.")
+        if status in {"REFUNDED", "COMPLETED"} or is_refunded is True:
+            if is_refunded is False or (is_refunded is True and status not in {"", "REFUNDED", "COMPLETED"}):
+                raise ProviderError("UPayments returned inconsistent refund-completion fields.")
             normalized = "REFUNDED"
         elif status in {"FAILED", "REJECTED", "CANCELED", "CANCELLED"}:
             normalized = "FAILED"
@@ -510,6 +538,6 @@ class UPaymentsProvider(BaseProvider):
         return {
             "status": normalized,
             "provider_refund_id": refund_id,
-            "provider_order_id": order_id,
+            "provider_order_id": refund_order_id,
             "raw": result,
         }

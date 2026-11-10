@@ -64,18 +64,19 @@ def _get_payment_hub_session(original_invoice):
 def _active_refund_amount(source_allocation, *, exclude_return_invoice=None):
     filters = {
         "source_allocation": source_allocation,
-        "status": ["in", list(ACTIVE_RESERVATION_STATUSES)],
+        "status": ["in", [*ACTIVE_RESERVATION_STATUSES, "Failed"]],
     }
     rows = frappe.get_all(
         "POS Refund Allocation",
         filters=filters,
-        fields=["amount", "return_invoice"],
+        fields=["amount", "return_invoice", "status"],
     )
     return flt(
         sum(
             flt(row.amount, 3)
             for row in rows
-            if not exclude_return_invoice or row.return_invoice != exclude_return_invoice
+            if (not exclude_return_invoice or row.return_invoice != exclude_return_invoice)
+            and (row.status != "Failed" or frappe.db.get_value("Sales Invoice", row.return_invoice, "docstatus") == 1)
         ),
         3,
     )
@@ -1186,53 +1187,35 @@ def _matching_legacy_override_authorization(return_doc, amount):
 
 
 def validate_sales_invoice_return_security(doc, method=None):
-    """Server-side fail-closed guard for POS electronic/terminal returns.
-
-    Frontend controls are convenience only. This hook prevents direct calls to
-    POSNext/ERPNext submit APIs from bypassing Payment Hub refund authorization.
-    """
+    """Permit an authorized return after verified acceptance, not bank settlement."""
     if doc.doctype != "Sales Invoice" or not cint(doc.is_return) or not doc.return_against:
         return
     if not frappe.db.exists("Sales Invoice", doc.return_against):
         return
+    refund_amount = flt(sum(abs(flt(row.amount, 3)) for row in (doc.payments or [])), 3)
+    allocation_names = frappe.get_all(
+        "POS Refund Allocation", filters={"return_invoice": doc.name}, pluck="name"
+    )
+    if allocation_names:
+        from erpnext_payment_hub.pos.return_submission import validate_ready
 
+        for name in sorted(allocation_names):
+            frappe.db.sql(
+                "SELECT name FROM `tabPOS Refund Allocation` WHERE name=%s FOR UPDATE", (name,)
+            )
+        rows = [frappe.get_doc("POS Refund Allocation", name) for name in allocation_names]
+        validate_ready(doc, rows)
+        return
+    if refund_amount <= 0:
+        return
     protected = _legacy_protected_payments(doc.return_against)
     if not protected:
         return
-
-    # Customer-credit returns contain no payment rows and do not release cash/card funds.
-    refund_amount = flt(sum(abs(flt(row.amount, 3)) for row in (doc.payments or [])), 3)
-    if refund_amount <= 0:
-        return
-
-    session = _get_payment_hub_session(doc.return_against)
-    if session:
-        allocation_names = frappe.get_all(
-            "POS Refund Allocation",
-            filters={"return_invoice": doc.name},
-            pluck="name",
+    if _get_payment_hub_session(doc.return_against):
+        frappe.throw(
+            "Electronic/terminal return requires Payment Hub refund allocations and manager authorization.",
+            frappe.PermissionError,
         )
-        if not allocation_names:
-            frappe.throw(
-                "Electronic/terminal return is controlled by Payment Hub. Process the refund "
-                "and manager authorization in POS before submitting this return invoice.",
-                frappe.PermissionError,
-            )
-
-        rows = [frappe.get_doc("POS Refund Allocation", name) for name in allocation_names]
-        if any(row.status != "Completed" for row in rows):
-            frappe.throw(
-                "Payment Hub refund is not completed. The return invoice cannot be submitted yet.",
-                frappe.PermissionError,
-            )
-        for row in rows:
-            if _authorization_required_for_channel(row.channel) or cint(row.is_override):
-                if not row.authorization or not row.authorized_by:
-                    frappe.throw(
-                        "Manager/admin authorization is missing for this electronic/terminal refund.",
-                        frappe.PermissionError,
-                    )
-        return
 
     # Legacy/non-tracked electronic or terminal payment. We cannot safely claim a
     # provider refund because there is no Payment Hub source transaction. Only the
@@ -1286,7 +1269,14 @@ def get_return_refund_status(return_invoice):
         _refund_allocation_response(frappe.get_doc("POS Refund Allocation", name))
         for name in rows
     ]
+    from erpnext_payment_hub.pos.return_submission import submission_summary
+    return_doc = frappe.get_doc("Sales Invoice", return_invoice)
+    documents = [frappe.get_doc("POS Refund Allocation", name) for name in rows]
+    readiness = submission_summary(return_doc, documents)
+    for item in result_rows:
+        item["can_retry"] = bool(item["status"] == "Failed" and return_doc.docstatus in (0, 1))
     return {
+        **readiness,
         "managed": True,
         "return_invoice": return_invoice,
         "original_invoice": result_rows[0]["original_invoice"],
@@ -1337,8 +1327,8 @@ def retry_failed_return_refunds(return_invoice):
     return invoice/source/amount.
     """
     return_doc = frappe.get_doc("Sales Invoice", return_invoice)
-    if return_doc.docstatus != 0 or not cint(return_doc.is_return) or not return_doc.return_against:
-        frappe.throw("Retry Refund requires a Draft return invoice.")
+    if return_doc.docstatus not in (0, 1) or not cint(return_doc.is_return) or not return_doc.return_against:
+        frappe.throw("Retry Refund requires a Draft or Submitted return invoice.")
 
     names = frappe.get_all(
         "POS Refund Allocation",
@@ -1487,3 +1477,17 @@ def retry_failed_return_refunds(return_invoice):
                 _maybe_send_refund_whatsapp(row)
 
     return get_return_refund_status(return_invoice)
+
+
+def reconcile_pending_refunds(limit=5):
+    """Refresh accepted UPayments refunds independently of invoice submission."""
+    names = frappe.get_all(
+        "POS Refund Allocation",
+        filters={"provider": "UPayments", "status": "Pending", "refund_gateway_transaction": ["is", "set"]},
+        pluck="name", order_by="modified asc", limit=max(1, min(int(limit or 5), 5)),
+    )
+    for name in names:
+        try:
+            _refresh_refund_row(frappe.get_doc("POS Refund Allocation", name))
+        except Exception:
+            frappe.log_error(title=f"Payment Hub refund reconciliation failed: {name}", message=frappe.get_traceback())
